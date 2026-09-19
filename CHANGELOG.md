@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-19
+
 ### Added
 
 - Native GUI executable with open-file, drag-and-drop, background inspection, and Phase 1–3 views.

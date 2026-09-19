@@ -2,23 +2,32 @@
 
 <p>
   <a href="https://github.com/bisug/BinaryInspector/actions/workflows/ci.yml"><img src="https://github.com/bisug/BinaryInspector/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://github.com/bisug/BinaryInspector/actions/workflows/gui-build.yml"><img src="https://github.com/bisug/BinaryInspector/actions/workflows/gui-build.yml/badge.svg?branch=main" alt="GUI build status"></a>
+  <a href="https://github.com/bisug/BinaryInspector/releases"><img src="https://img.shields.io/github/v/release/bisug/BinaryInspector.svg" alt="Latest release"></a>
   <a href="https://github.com/bisug/BinaryInspector/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-0b6e4f.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/Rust-1.98.1%2B-b7410e.svg" alt="Rust 1.98.1 or newer">
   <a href="https://github.com/bisug/BinaryInspector/security"><img src="https://img.shields.io/badge/security-policy-5b5bd6.svg" alt="Security policy"></a>
 </p>
 
-BinaryInspector is a safe, local Rust CLI for inspecting ELF binaries. It never executes, loads, or dynamically links its target and performs no runtime network I/O.
+BinaryInspector is a safe, local Rust CLI and native desktop application for inspecting ELF binaries. It never executes, loads, or dynamically links its target and performs no runtime network I/O.
 
 ## Current capabilities
 
 - ELF32/ELF64 identity, ABI, machine, endianness, type, entry point, and file size
-- Sections and program segments
+- Section and program segment tables
 - Dynamic interpreter, `DT_NEEDED`, `RPATH`, and `RUNPATH`
-- Bounded reads, checked parser arithmetic, and terminal-safe binary strings (`\xNN` escaping)
+- Cross-platform native desktop GUI (`binary-inspector-gui`) with file dialog, drag-and-drop, and background inspection
+- Bounded reads, checked parser arithmetic, symlink/FIFO traversal protection, and terminal-safe binary strings (`\xNN` escaping)
 
 Symbols, hardening analysis, and JSON output are planned. See the [roadmap](ROADMAP.md).
 
-## Install from source
+## Installation
+
+### Pre-built binaries
+
+Download the latest pre-built binaries for Linux, macOS, and Windows from [GitHub Releases](https://github.com/bisug/BinaryInspector/releases).
+
+### Build from source
 
 ```sh
 git clone https://github.com/bisug/BinaryInspector.git
@@ -26,17 +35,19 @@ cd BinaryInspector
 cargo build --release
 ```
 
-The executable is `target/release/binary-inspector`.
+The CLI executable is `target/release/binary-inspector`.
 
-To build the native desktop application:
+To build the native desktop GUI application:
 
 ```sh
 cargo build --release --bin binary-inspector-gui
 ```
 
-The GUI executable is `target/release/binary-inspector-gui` (`.exe` on Windows). It supports Open File and drag-and-drop, and presents Overview, Sections, Segments, and Dependencies views. It uses the same safe inspection core as the CLI.
+The GUI executable is `target/release/binary-inspector-gui` (`.exe` on Windows). It supports file picker dialogs, drag-and-drop, and presents Overview, Sections, Segments, and Dependencies views. It uses the same safe inspection core as the CLI.
 
 ## Usage
+
+### Command-line interface
 
 ```text
 binary-inspector <FILE>
@@ -54,6 +65,19 @@ No category flag prints all currently implemented categories; flags can be combi
 ```sh
 binary-inspector /bin/ls -d
 ```
+
+### Native desktop GUI
+
+Launch the GUI:
+
+```sh
+binary-inspector-gui
+```
+
+- Click **Open binary** to select an ELF binary using the native platform file chooser.
+- Or simply **drag and drop** an ELF binary into the application window.
+- The binary is parsed asynchronously on a background thread while the UI remains fully responsive.
+- Navigate between **Overview**, **Sections**, **Segments**, and **Dependencies** tabs.
 
 ## Exit codes
 
