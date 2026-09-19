@@ -15,6 +15,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "BinaryInspector",
         eframe::NativeOptions {
+            renderer: eframe::Renderer::Glow,
             viewport: egui::ViewportBuilder::default().with_inner_size([1040.0, 720.0]),
             ..Default::default()
         },

@@ -20,7 +20,7 @@
 
 The foundation uses `clap` 4.6.7 for argument parsing and `serde` 1.0.229 for typed domain models. Both were verified against crates.io and docs.rs on 2026-09-19; their declared MSRVs are below this project's Rust 1.98.1 baseline. `serde_json` will be verified and added only with Phase 6.
 
-The GUI uses `eframe` 0.36.2 and `rfd` 0.17.2, verified on 2026-09-19. `eframe` supports native Linux, macOS, and Windows builds and declares Rust 1.95 compatibility; `rfd` supplies the host-native file chooser.
+The GUI uses `eframe` 0.36.2 with its lightweight native OpenGL renderer and `rfd` 0.17.2, verified on 2026-09-19. `eframe` supports native Linux, macOS, and Windows builds and declares Rust 1.95 compatibility; `rfd` supplies the host-native file chooser. Release builds use thin LTO, one codegen unit, symbol stripping, and abort-on-panic for smaller, faster binaries.
 
 ## Exit codes
 

@@ -18,6 +18,10 @@ All notable changes to this project are documented here.
 - Validated all on-disk section ranges and dynamic string-table links.
 - Hardened Unix target opening against symlink traversal and FIFO replacement races.
 
+### Changed
+
+- Replaced the GUI's default GPU stack with the lighter native OpenGL renderer and optimized release build settings.
+
 ### Added
 
 - Phase 1 ELF identification and bounded regular-file input handling.
