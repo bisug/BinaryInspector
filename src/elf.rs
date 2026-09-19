@@ -3,8 +3,8 @@
 use crate::{
     error::AppError,
     model::{
-        Binary, ElfClass, ElfHeader, ElfType, Endianness, FileFormat, FileMetadata, Machine, OsAbi,
-        Section, Segment,
+        Binary, DynamicInfo, ElfClass, ElfHeader, ElfType, Endianness, FileFormat, FileMetadata,
+        Machine, OsAbi, Section, Segment,
     },
     text::escape_bytes,
 };
@@ -36,6 +36,7 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     let layout = Layout::read(bytes, &class, &endianness)?;
     let sections = parse_sections(bytes, &class, &endianness, &layout)?;
     let segments = parse_segments(bytes, &class, &endianness, &layout)?;
+    let dynamic = dynamic_info(bytes, &class, &endianness, &sections, &segments)?;
 
     Ok(Binary {
         format: FileFormat::Elf,
@@ -49,9 +50,80 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
             abi_version: ident[8],
             entry_point: layout.entry_point,
         },
+        dynamic,
         sections,
         segments,
     })
+}
+
+fn dynamic_info(
+    bytes: &[u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    sections: &[Section],
+    segments: &[Segment],
+) -> Result<DynamicInfo, AppError> {
+    let mut info = DynamicInfo::default();
+    if let Some(interpreter) = segments.iter().find(|segment| segment.segment_type == 3) {
+        let value = file_slice(
+            bytes,
+            interpreter.offset,
+            interpreter.file_size,
+            "interpreter",
+        )?;
+        let end = value
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| malformed("unterminated interpreter"))?;
+        info.interpreter = Some(escape_bytes(&value[..end]));
+    }
+    let Some(dynamic) = sections.iter().find(|section| section.section_type == 6) else {
+        return Ok(info);
+    };
+    let strings = sections
+        .get(
+            usize::try_from(dynamic.link)
+                .map_err(|_| malformed("dynamic string-table index is too large"))?,
+        )
+        .ok_or_else(|| malformed("dynamic string-table index is outside the section table"))?;
+    let data = file_slice(bytes, dynamic.offset, dynamic.size, "dynamic section")?;
+    let width = match class {
+        ElfClass::Elf32 => 8,
+        ElfClass::Elf64 => 16,
+    };
+    if data.len() % width != 0 {
+        return Err(malformed("dynamic section has an invalid entry size"));
+    }
+    let table = file_slice(bytes, strings.offset, strings.size, "dynamic string table")?;
+    for offset in (0..data.len()).step_by(width) {
+        let tag = match class {
+            ElfClass::Elf32 => u64::from(read_u32(data, offset, endianness)?),
+            ElfClass::Elf64 => read_u64(data, offset, endianness)?,
+        };
+        let value = match class {
+            ElfClass::Elf32 => u64::from(read_u32(data, offset + 4, endianness)?),
+            ElfClass::Elf64 => read_u64(data, offset + 8, endianness)?,
+        };
+        if tag == 0 {
+            break;
+        }
+        let text = || {
+            string_at(
+                table,
+                u32::try_from(value)
+                    .map_err(|_| malformed("dynamic string offset is too large"))?,
+            )
+        };
+        match tag {
+            1 => info.needed.push(text()?),
+            15 => info.rpath = Some(text()?),
+            29 => info.runpath = Some(text()?),
+            30 if value & 8 != 0 => info.bind_now = true,
+            0x6fff_fffb if value & 1 != 0 => info.bind_now = true,
+            _ => {}
+        }
+    }
+    Ok(info)
 }
 
 #[derive(Debug)]
@@ -170,6 +242,7 @@ fn parse_sections(
                 address: section.address,
                 offset: section.offset,
                 size: section.size,
+                link: section.link,
             })
         })
         .collect()
@@ -183,6 +256,7 @@ struct RawSection {
     address: u64,
     offset: u64,
     size: u64,
+    link: u32,
 }
 
 impl RawSection {
@@ -231,6 +305,16 @@ impl RawSection {
                 ElfClass::Elf32 => 20,
                 ElfClass::Elf64 => 32,
             })?,
+            link: read_u32(
+                bytes,
+                offset
+                    .checked_add(match class {
+                        ElfClass::Elf32 => 24,
+                        ElfClass::Elf64 => 40,
+                    })
+                    .ok_or_else(|| malformed("integer overflow"))?,
+                endianness,
+            )?,
         })
     }
 }

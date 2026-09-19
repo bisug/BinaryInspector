@@ -4,7 +4,7 @@ BinaryInspector is a local Rust CLI for safely inspecting ELF binaries. It does 
 
 ## Status
 
-Phases 1–2 are implemented: ELF identity, file metadata, sections, and program segments. Later phases add dependencies, symbols, security properties, and JSON. The planned full CLI is:
+Phases 1–3 are implemented: ELF identity, structure, interpreter, dynamic dependencies, RPATH, and RUNPATH. Later phases add symbols, security properties, and JSON. The planned full CLI is:
 
 ```text
 binary-inspector <FILE> [--sections] [--segments] [--symbols] [--dependencies] [--security] [--json]

@@ -5,7 +5,7 @@ use std::fmt::Write;
 use crate::model::Binary;
 
 /// Formats the currently available human-readable report.
-pub fn human(binary: &Binary, sections: bool, segments: bool) -> String {
+pub fn human(binary: &Binary, sections: bool, segments: bool, dependencies: bool) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "Format: ELF");
     let _ = writeln!(output, "File size: {} bytes", binary.file.size_bytes);
@@ -47,6 +47,24 @@ pub fn human(binary: &Binary, sections: bool, segments: bool) -> String {
                 segment.memory_size,
                 segment.alignment
             );
+        }
+    }
+    if dependencies {
+        let _ = writeln!(output, "\nDependencies:");
+        if let Some(interpreter) = &binary.dynamic.interpreter {
+            let _ = writeln!(output, "  Interpreter: {interpreter}");
+        }
+        if let Some(rpath) = &binary.dynamic.rpath {
+            let _ = writeln!(output, "  RPATH: {rpath}");
+        }
+        if let Some(runpath) = &binary.dynamic.runpath {
+            let _ = writeln!(output, "  RUNPATH: {runpath}");
+        }
+        for needed in &binary.dynamic.needed {
+            let _ = writeln!(output, "  Needed: {needed}");
+        }
+        if binary.dynamic.needed.is_empty() && binary.dynamic.interpreter.is_none() {
+            let _ = writeln!(output, "  None");
         }
     }
     output

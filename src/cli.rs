@@ -19,6 +19,9 @@ pub struct Cli {
     /// Include program segments.
     #[arg(long)]
     pub segments: bool,
+    /// Include dynamic dependencies and loader metadata.
+    #[arg(long)]
+    pub dependencies: bool,
     /// Disable color (human output is currently uncolored).
     #[arg(long)]
     pub no_color: bool,

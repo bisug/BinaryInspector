@@ -17,6 +17,23 @@ pub struct Binary {
     pub sections: Vec<Section>,
     /// Program segments in file order.
     pub segments: Vec<Segment>,
+    /// Dynamic-loader metadata, when present.
+    pub dynamic: DynamicInfo,
+}
+
+/// Dynamic-loader metadata extracted without loading the binary.
+#[derive(Debug, Default, Serialize)]
+pub struct DynamicInfo {
+    /// The requested ELF interpreter from `PT_INTERP`.
+    pub interpreter: Option<String>,
+    /// `DT_NEEDED` library names in file order.
+    pub needed: Vec<String>,
+    /// `DT_RPATH`, if present.
+    pub rpath: Option<String>,
+    /// `DT_RUNPATH`, if present.
+    pub runpath: Option<String>,
+    /// Whether dynamic flags request immediate binding.
+    pub bind_now: bool,
 }
 
 /// One ELF section-table entry.
@@ -36,6 +53,8 @@ pub struct Section {
     pub offset: u64,
     /// Size in bytes.
     pub size: u64,
+    /// Linked section index, when defined by the section type.
+    pub link: u32,
 }
 
 /// One ELF program-header entry.

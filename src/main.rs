@@ -22,7 +22,7 @@ fn main() -> ExitCode {
             };
         }
     };
-    let all_categories = !cli.sections && !cli.segments;
+    let all_categories = !cli.sections && !cli.segments && !cli.dependencies;
     match inspect(&cli.file) {
         Ok(binary) => {
             print!(
@@ -30,7 +30,8 @@ fn main() -> ExitCode {
                 report::human(
                     &binary,
                     all_categories || cli.sections,
-                    all_categories || cli.segments
+                    all_categories || cli.segments,
+                    all_categories || cli.dependencies
                 )
             );
             ExitCode::SUCCESS
