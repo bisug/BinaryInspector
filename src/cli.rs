@@ -8,7 +8,7 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(
     version,
-    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -d\n  binary-inspector ./app -S -l\n\nExit codes: 0 success; 1 usage; 2 I/O; 3 parse error."
+    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n\nExit codes: 0 success; 1 usage; 2 I/O; 3 parse error."
 )]
 pub struct Cli {
     /// ELF file to inspect.
@@ -22,6 +22,18 @@ pub struct Cli {
     /// Include dynamic dependencies and loader metadata.
     #[arg(short = 'd', long)]
     pub dependencies: bool,
+    /// Include symbol tables.
+    #[arg(short = 's', long)]
+    pub symbols: bool,
+    /// Include security hardening mitigations (checksec).
+    #[arg(short = 'm', long)]
+    pub mitigations: bool,
+    /// Include ELF notes and build information.
+    #[arg(short = 'n', long)]
+    pub notes: bool,
+    /// Include relocation entries.
+    #[arg(short = 'r', long)]
+    pub relocations: bool,
     /// Include every available category (the default).
     #[arg(short, long)]
     pub all: bool,
@@ -41,5 +53,12 @@ mod tests {
         let cli = Cli::try_parse_from(["binary-inspector", "fixture", "-Sld"])
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(cli.sections && cli.segments && cli.dependencies);
+    }
+
+    #[test]
+    fn accepts_extended_category_flags() {
+        let cli = Cli::try_parse_from(["binary-inspector", "fixture", "-smnr"])
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(cli.symbols && cli.mitigations && cli.notes && cli.relocations);
     }
 }

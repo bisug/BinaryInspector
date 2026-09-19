@@ -5,6 +5,7 @@
 pub mod cli;
 pub mod elf;
 pub mod error;
+pub mod hash;
 pub mod input;
 pub mod model;
 pub mod report;

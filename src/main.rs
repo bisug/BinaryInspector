@@ -4,7 +4,11 @@ use std::process::ExitCode;
 
 use clap::{error::ErrorKind, Parser};
 
-use binary_inspector::{cli::Cli, inspect, report};
+use binary_inspector::{
+    cli::Cli,
+    inspect,
+    report::{self, ReportOptions},
+};
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -22,18 +26,28 @@ fn main() -> ExitCode {
             };
         }
     };
-    let all_categories = cli.all || (!cli.sections && !cli.segments && !cli.dependencies);
+
+    let any_selected = cli.sections
+        || cli.segments
+        || cli.dependencies
+        || cli.symbols
+        || cli.mitigations
+        || cli.notes
+        || cli.relocations;
+    let all = cli.all || !any_selected;
+
     match inspect(&cli.file) {
         Ok(binary) => {
-            print!(
-                "{}",
-                report::human(
-                    &binary,
-                    all_categories || cli.sections,
-                    all_categories || cli.segments,
-                    all_categories || cli.dependencies
-                )
-            );
+            let options = ReportOptions {
+                sections: all || cli.sections,
+                segments: all || cli.segments,
+                dependencies: all || cli.dependencies,
+                symbols: all || cli.symbols,
+                mitigations: all || cli.mitigations,
+                notes: all || cli.notes,
+                relocations: all || cli.relocations,
+            };
+            print!("{}", report::report_human(&binary, options));
             ExitCode::SUCCESS
         }
         Err(error) => {

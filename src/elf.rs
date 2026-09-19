@@ -1,10 +1,13 @@
-//! Bounded decoding of ELF headers, sections, and program segments.
+//! Bounded decoding of ELF headers, sections, program segments, symbols, notes, relocations, and security mitigations.
 
 use crate::{
     error::AppError,
+    hash::{calculate_entropy, sha256_hex},
     model::{
-        Binary, DynamicInfo, ElfClass, ElfHeader, ElfType, Endianness, FileFormat, FileMetadata,
-        Machine, OsAbi, Section, Segment,
+        Binary, DynamicEntry, DynamicInfo, ElfClass, ElfHeader, ElfNote, ElfType, Endianness,
+        FileFormat, FileHashes, FileMetadata, Machine, OsAbi, PieStatus, Relocation, Relro,
+        Section, SecurityMitigations, Segment, Symbol, SymbolBinding, SymbolTableKind, SymbolType,
+        SymbolVisibility,
     },
     text::escape_bytes,
 };
@@ -12,10 +15,12 @@ use crate::{
 const ELF_IDENT_SIZE: usize = 16;
 const MAX_TABLE_ENTRIES: u16 = 65_534;
 const MAX_DYNAMIC_ENTRIES: usize = 16_384;
+const MAX_SYMBOL_ENTRIES: usize = 65_536;
+const MAX_RELOC_ENTRIES: usize = 32_768;
 const MAX_STRING_BYTES: usize = 4_096;
-const MAX_TOTAL_TEXT_BYTES: usize = 1024 * 1024;
+const MAX_TOTAL_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
-/// Parses Phase 1 and 2 ELF metadata from an owned byte buffer.
+/// Parses comprehensive ELF metadata from an owned byte buffer.
 pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     let ident = bytes
         .get(..ELF_IDENT_SIZE)
@@ -40,23 +45,123 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     let sections = parse_sections(bytes, &class, &endianness, &layout)?;
     let segments = parse_segments(bytes, &class, &endianness, &layout)?;
     let dynamic = dynamic_info(bytes, &class, &endianness, &sections, &segments)?;
+    let symbols = parse_symbols(bytes, &class, &endianness, &sections)?;
+    let notes = parse_notes(bytes, &class, &endianness, &sections, &segments)?;
+    let relocations = parse_relocations(bytes, &class, &endianness, &sections, &symbols)?;
+
+    let elf_header = ElfHeader {
+        class,
+        endianness,
+        elf_type: elf_type(read_u16(bytes, 16, &layout.endianness)?),
+        machine: machine(read_u16(bytes, 18, &layout.endianness)?),
+        os_abi: os_abi(ident[7]),
+        abi_version: ident[8],
+        entry_point: layout.entry_point,
+        flags: layout.flags,
+        section_offset: layout.section_offset,
+        section_entry_size: layout.section_entry_size,
+        section_count: layout.section_count,
+        program_offset: layout.program_offset,
+        program_entry_size: layout.program_entry_size,
+        program_count: layout.program_count,
+    };
+
+    let mitigations = analyze_mitigations(&elf_header, &dynamic, &segments, &symbols);
+    let hashes = FileHashes {
+        sha256: sha256_hex(bytes),
+    };
 
     Ok(Binary {
         format: FileFormat::Elf,
         file: FileMetadata { size_bytes },
-        elf: ElfHeader {
-            class,
-            endianness,
-            elf_type: elf_type(read_u16(bytes, 16, &layout.endianness)?),
-            machine: machine(read_u16(bytes, 18, &layout.endianness)?),
-            os_abi: os_abi(ident[7]),
-            abi_version: ident[8],
-            entry_point: layout.entry_point,
-        },
+        elf: elf_header,
         dynamic,
         sections,
         segments,
+        symbols,
+        mitigations,
+        notes,
+        relocations,
+        hashes,
     })
+}
+
+fn analyze_mitigations(
+    elf: &ElfHeader,
+    dynamic: &DynamicInfo,
+    segments: &[Segment],
+    symbols: &[Symbol],
+) -> SecurityMitigations {
+    // 1. RELRO
+    let has_relro = segments.iter().any(|s| s.segment_type == 0x6474_e552); // PT_GNU_RELRO
+    let relro = if has_relro {
+        if dynamic.bind_now {
+            Relro::Full
+        } else {
+            Relro::Partial
+        }
+    } else {
+        Relro::None
+    };
+
+    // 2. Stack canary
+    let stack_canary = symbols
+        .iter()
+        .any(|s| s.name == "__stack_chk_fail" || s.name == "__stack_chk_guard");
+
+    // 3. NX (No-Execute)
+    let gnu_stack = segments.iter().find(|s| s.segment_type == 0x6474_e551); // PT_GNU_STACK
+    let nx = match gnu_stack {
+        Some(seg) => (seg.flags & 1) == 0, // PF_X (1) not set => stack non-executable
+        None => false,
+    };
+
+    // 4. PIE
+    let pie = match elf.elf_type {
+        ElfType::Executable => PieStatus::NoPie,
+        ElfType::Shared => {
+            if dynamic.interpreter.is_some() {
+                PieStatus::Pie
+            } else {
+                PieStatus::Dso
+            }
+        }
+        _ => PieStatus::NoPie,
+    };
+
+    // 5. Fortified functions
+    let mut fortified_functions = Vec::new();
+    for sym in symbols {
+        if sym.is_import && sym.name.ends_with("_chk") && !fortified_functions.contains(&sym.name) {
+            fortified_functions.push(sym.name.clone());
+        }
+    }
+
+    // 6. RWX Segments (Write + Execute permission violation)
+    let rwx_segments = segments
+        .iter()
+        .filter(|s| (s.flags & 2 != 0) && (s.flags & 1 != 0))
+        .count();
+
+    // 7. Insecure RPATH/RUNPATH
+    let is_insecure_path = |path: &str| {
+        path.split(':').any(|part| {
+            let p = part.trim();
+            p.is_empty() || p == "." || p.starts_with("./")
+        })
+    };
+    let has_insecure_rpath = dynamic.rpath.as_deref().is_some_and(is_insecure_path)
+        || dynamic.runpath.as_deref().is_some_and(is_insecure_path);
+
+    SecurityMitigations {
+        relro,
+        stack_canary,
+        nx,
+        pie,
+        fortified_functions,
+        rwx_segments,
+        has_insecure_rpath,
+    }
 }
 
 fn dynamic_info(
@@ -124,22 +229,506 @@ fn dynamic_info(
                     .map_err(|_| malformed("dynamic string offset is too large"))?,
             )
         };
+        let mut string_val = None;
         match tag {
-            1 => info.needed.push(take_text(text()?, &mut text_bytes)?),
-            15 => info.rpath = Some(take_text(text()?, &mut text_bytes)?),
-            29 => info.runpath = Some(take_text(text()?, &mut text_bytes)?),
+            1 => {
+                let s = take_text(text()?, &mut text_bytes)?;
+                info.needed.push(s.clone());
+                string_val = Some(s);
+            }
+            14 => {
+                // DT_SONAME
+                let s = take_text(text()?, &mut text_bytes)?;
+                string_val = Some(s);
+            }
+            15 => {
+                let s = take_text(text()?, &mut text_bytes)?;
+                info.rpath = Some(s.clone());
+                string_val = Some(s);
+            }
+            29 => {
+                let s = take_text(text()?, &mut text_bytes)?;
+                info.runpath = Some(s.clone());
+                string_val = Some(s);
+            }
             30 if value & 8 != 0 => info.bind_now = true,
             0x6fff_fffb if value & 1 != 0 => info.bind_now = true,
             _ => {}
         }
+        info.entries.push(DynamicEntry {
+            tag,
+            tag_name: dynamic_tag_name(tag).to_string(),
+            value,
+            string_value: string_val,
+        });
     }
     Ok(info)
+}
+
+fn dynamic_tag_name(tag: u64) -> &'static str {
+    match tag {
+        0 => "DT_NULL",
+        1 => "DT_NEEDED",
+        2 => "DT_PLTRELSZ",
+        3 => "DT_PLTGOT",
+        4 => "DT_HASH",
+        5 => "DT_STRTAB",
+        6 => "DT_SYMTAB",
+        7 => "DT_RELA",
+        8 => "DT_RELASZ",
+        9 => "DT_RELAENT",
+        10 => "DT_STRSZ",
+        11 => "DT_SYMENT",
+        12 => "DT_INIT",
+        13 => "DT_FINI",
+        14 => "DT_SONAME",
+        15 => "DT_RPATH",
+        16 => "DT_SYMBOLIC",
+        17 => "DT_REL",
+        18 => "DT_RELSZ",
+        19 => "DT_RELENT",
+        20 => "DT_PLTREL",
+        21 => "DT_DEBUG",
+        22 => "DT_TEXTREL",
+        23 => "DT_JMPREL",
+        24 => "DT_BIND_NOW",
+        25 => "DT_INIT_ARRAY",
+        26 => "DT_FINI_ARRAY",
+        27 => "DT_INIT_ARRAYSZ",
+        28 => "DT_FINI_ARRAYSZ",
+        29 => "DT_RUNPATH",
+        30 => "DT_FLAGS",
+        0x6fff_fffb => "DT_FLAGS_1",
+        0x6fff_fef5 => "DT_GNU_HASH",
+        0x6fff_fffe => "DT_VERNEED",
+        0x6fff_ffff => "DT_VERNEEDNUM",
+        0x6fff_fffd => "DT_VERSYM",
+        0x6fff_ff00 => "DT_VERSYM",
+        _ => "DT_OTHER",
+    }
+}
+
+fn parse_symbols(
+    bytes: &[u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    sections: &[Section],
+) -> Result<Vec<Symbol>, AppError> {
+    let mut symbols = Vec::new();
+    let mut text_bytes = 0;
+
+    for section in sections {
+        if section.section_type != 2 && section.section_type != 11 {
+            continue; // Only SHT_SYMTAB (2) and SHT_DYNSYM (11)
+        }
+        let table_kind = if section.section_type == 2 {
+            SymbolTableKind::Static
+        } else {
+            SymbolTableKind::Dynamic
+        };
+
+        let string_table_bytes = if let Some(str_sec) = sections.get(section.link as usize) {
+            if str_sec.section_type == 3 {
+                Some(file_slice(
+                    bytes,
+                    str_sec.offset,
+                    str_sec.size,
+                    "symbol string table",
+                )?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let entry_size = match class {
+            ElfClass::Elf32 => 16,
+            ElfClass::Elf64 => 24,
+        };
+
+        let sym_data = file_slice(bytes, section.offset, section.size, "symbol table")?;
+        let entry_count = sym_data.len() / entry_size;
+        let clamped_count = entry_count.min(MAX_SYMBOL_ENTRIES);
+
+        for i in 0..clamped_count {
+            let offset = i * entry_size;
+            let (name_offset, value, size, info, other, shndx) = match class {
+                ElfClass::Elf32 => {
+                    let name = read_u32(sym_data, offset, endianness)?;
+                    let val = u64::from(read_u32(sym_data, offset + 4, endianness)?);
+                    let sz = u64::from(read_u32(sym_data, offset + 8, endianness)?);
+                    let inf = sym_data
+                        .get(offset + 12)
+                        .copied()
+                        .ok_or_else(|| malformed("symbol info truncated"))?;
+                    let oth = sym_data
+                        .get(offset + 13)
+                        .copied()
+                        .ok_or_else(|| malformed("symbol other truncated"))?;
+                    let sh = read_u16(sym_data, offset + 14, endianness)?;
+                    (name, val, sz, inf, oth, sh)
+                }
+                ElfClass::Elf64 => {
+                    let name = read_u32(sym_data, offset, endianness)?;
+                    let inf = sym_data
+                        .get(offset + 4)
+                        .copied()
+                        .ok_or_else(|| malformed("symbol info truncated"))?;
+                    let oth = sym_data
+                        .get(offset + 5)
+                        .copied()
+                        .ok_or_else(|| malformed("symbol other truncated"))?;
+                    let sh = read_u16(sym_data, offset + 6, endianness)?;
+                    let val = read_u64(sym_data, offset + 8, endianness)?;
+                    let sz = read_u64(sym_data, offset + 16, endianness)?;
+                    (name, val, sz, inf, oth, sh)
+                }
+            };
+
+            let sym_type_raw = info & 0x0f;
+            let sym_bind_raw = info >> 4;
+            let sym_vis_raw = other & 0x03;
+
+            let sym_type = match sym_type_raw {
+                0 => SymbolType::NoType,
+                1 => SymbolType::Object,
+                2 => SymbolType::Func,
+                3 => SymbolType::Section,
+                4 => SymbolType::File,
+                5 => SymbolType::Common,
+                6 => SymbolType::Tls,
+                10 => SymbolType::GnuIfunc,
+                v => SymbolType::Other(v),
+            };
+
+            let binding = match sym_bind_raw {
+                0 => SymbolBinding::Local,
+                1 => SymbolBinding::Global,
+                2 => SymbolBinding::Weak,
+                10 => SymbolBinding::GnuUnique,
+                v => SymbolBinding::Other(v),
+            };
+
+            let visibility = match sym_vis_raw {
+                0 => SymbolVisibility::Default,
+                1 => SymbolVisibility::Internal,
+                2 => SymbolVisibility::Hidden,
+                3 => SymbolVisibility::Protected,
+                _ => SymbolVisibility::Default,
+            };
+
+            let name = if name_offset != 0 {
+                if let Some(str_table) = string_table_bytes {
+                    match string_at(str_table, name_offset) {
+                        Ok(s) => take_text(s, &mut text_bytes)?,
+                        Err(_) => String::new(),
+                    }
+                } else {
+                    String::new()
+                }
+            } else if sym_type_raw == 3 && (shndx as usize) < sections.len() {
+                sections[shndx as usize].name.clone()
+            } else {
+                String::new()
+            };
+
+            let is_import = shndx == 0 && !name.is_empty();
+            let is_export =
+                shndx != 0 && (sym_bind_raw == 1 || sym_bind_raw == 2) && !name.is_empty();
+            let section_index = if shndx == 0 || shndx >= 0xff00 {
+                None
+            } else {
+                Some(shndx)
+            };
+
+            symbols.push(Symbol {
+                index: symbols.len(),
+                name,
+                value,
+                size,
+                sym_type,
+                binding,
+                visibility,
+                section_index,
+                is_import,
+                is_export,
+                table: table_kind,
+            });
+        }
+    }
+
+    Ok(symbols)
+}
+
+fn parse_notes(
+    bytes: &[u8],
+    _class: &ElfClass,
+    endianness: &Endianness,
+    sections: &[Section],
+    segments: &[Segment],
+) -> Result<Vec<ElfNote>, AppError> {
+    let mut notes = Vec::new();
+
+    // Check SHT_NOTE sections first, or PT_NOTE segments if no sections
+    let note_slices = sections
+        .iter()
+        .filter(|s| s.section_type == 7)
+        .map(|s| (s.offset, s.size));
+
+    let mut ranges: Vec<(u64, u64)> = note_slices.collect();
+    if ranges.is_empty() {
+        ranges = segments
+            .iter()
+            .filter(|s| s.segment_type == 4)
+            .map(|s| (s.offset, s.file_size))
+            .collect();
+    }
+
+    for (offset, size) in ranges {
+        if size == 0 {
+            continue;
+        }
+        let Ok(data) = file_slice(bytes, offset, size, "note data") else {
+            continue;
+        };
+        let mut cur = 0;
+        while cur + 12 <= data.len() {
+            let namesz = match read_u32(data, cur, endianness) {
+                Ok(v) => v as usize,
+                Err(_) => break,
+            };
+            let descsz = match read_u32(data, cur + 4, endianness) {
+                Ok(v) => v as usize,
+                Err(_) => break,
+            };
+            let note_type = match read_u32(data, cur + 8, endianness) {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            cur += 12;
+
+            let name_padded = (namesz + 3) & !3;
+            let desc_padded = (descsz + 3) & !3;
+
+            if cur + name_padded > data.len() {
+                break;
+            }
+            let name_raw = &data[cur..cur + namesz];
+            cur += name_padded;
+
+            if cur + desc_padded > data.len() {
+                break;
+            }
+            let desc_raw = &data[cur..cur + descsz];
+            cur += desc_padded;
+
+            let clean_name = escape_bytes(if let Some(&0) = name_raw.last() {
+                &name_raw[..name_raw.len() - 1]
+            } else {
+                name_raw
+            });
+
+            let mut build_id = None;
+            let mut abi_tag = None;
+            let mut properties = Vec::new();
+            let mut description = format!("Note type {note_type:#x}");
+
+            if clean_name == "GNU" {
+                match note_type {
+                    1 => {
+                        // NT_GNU_ABI_TAG: OS (4B), Major (4B), Minor (4B), Subminor (4B)
+                        if desc_raw.len() >= 16 {
+                            let os = read_u32(desc_raw, 0, endianness).unwrap_or(0);
+                            let major = read_u32(desc_raw, 4, endianness).unwrap_or(0);
+                            let minor = read_u32(desc_raw, 8, endianness).unwrap_or(0);
+                            let subminor = read_u32(desc_raw, 12, endianness).unwrap_or(0);
+                            let os_str = match os {
+                                0 => "Linux",
+                                1 => "GNU/Hurd",
+                                2 => "Solaris",
+                                3 => "FreeBSD",
+                                _ => "OS",
+                            };
+                            let tag = format!("{os_str} {major}.{minor}.{subminor}");
+                            description = format!("ABI requirement: {tag}");
+                            abi_tag = Some(tag);
+                        }
+                    }
+                    3 => {
+                        // NT_GNU_BUILD_ID: SHA-1 or MD5 hash bytes
+                        let mut hex = String::with_capacity(desc_raw.len() * 2);
+                        for &b in desc_raw {
+                            use std::fmt::Write;
+                            let _ = write!(hex, "{b:02x}");
+                        }
+                        description = format!("Build ID: {hex}");
+                        build_id = Some(hex);
+                    }
+                    5 => {
+                        // NT_GNU_PROPERTY_TYPE_0
+                        description = "GNU Properties".to_string();
+                        let mut prop_offset = 0;
+                        while prop_offset + 8 <= desc_raw.len() {
+                            let pr_type = read_u32(desc_raw, prop_offset, endianness).unwrap_or(0);
+                            let pr_datasz = read_u32(desc_raw, prop_offset + 4, endianness)
+                                .unwrap_or(0) as usize;
+                            prop_offset += 8;
+                            if prop_offset + pr_datasz > desc_raw.len() {
+                                break;
+                            }
+                            let pr_data = &desc_raw[prop_offset..prop_offset + pr_datasz];
+                            let pr_padded = (pr_datasz + 7) & !7;
+                            prop_offset += pr_padded;
+
+                            match pr_type {
+                                0xc000_0002 => {
+                                    // GNU_PROPERTY_X86_FEATURE_1_AND
+                                    if let Ok(bits) = read_u32(pr_data, 0, endianness) {
+                                        if bits & 1 != 0 {
+                                            properties.push(
+                                                "x86 IBT (Indirect Branch Tracking)".to_string(),
+                                            );
+                                        }
+                                        if bits & 2 != 0 {
+                                            properties.push("x86 SHSTK (Shadow Stack)".to_string());
+                                        }
+                                    }
+                                }
+                                0xc000_0000 => {
+                                    // GNU_PROPERTY_AARCH64_FEATURE_1_AND
+                                    if let Ok(bits) = read_u32(pr_data, 0, endianness) {
+                                        if bits & 1 != 0 {
+                                            properties.push(
+                                                "ARM BTI (Branch Target Identification)"
+                                                    .to_string(),
+                                            );
+                                        }
+                                        if bits & 2 != 0 {
+                                            properties.push(
+                                                "ARM PAC (Pointer Authentication)".to_string(),
+                                            );
+                                        }
+                                    }
+                                }
+                                other => {
+                                    properties.push(format!("Property {other:#x}"));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else if clean_name == "Go" && note_type == 4 {
+                description = format!("Go Build ID: {}", escape_bytes(desc_raw));
+            }
+
+            notes.push(ElfNote {
+                name: clean_name,
+                note_type,
+                description,
+                build_id,
+                abi_tag,
+                properties,
+            });
+        }
+    }
+
+    Ok(notes)
+}
+
+fn parse_relocations(
+    bytes: &[u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    sections: &[Section],
+    symbols: &[Symbol],
+) -> Result<Vec<Relocation>, AppError> {
+    let mut relocations = Vec::new();
+
+    for section in sections {
+        let is_rela = section.section_type == 4; // SHT_RELA
+        let is_rel = section.section_type == 9; // SHT_REL
+        if !is_rela && !is_rel {
+            continue;
+        }
+
+        let entry_size = match (class, is_rela) {
+            (ElfClass::Elf32, false) => 8,
+            (ElfClass::Elf32, true) => 12,
+            (ElfClass::Elf64, false) => 16,
+            (ElfClass::Elf64, true) => 24,
+        };
+
+        let Ok(data) = file_slice(bytes, section.offset, section.size, "relocation table") else {
+            continue;
+        };
+
+        let count = (data.len() / entry_size).min(MAX_RELOC_ENTRIES);
+        for i in 0..count {
+            if relocations.len() >= MAX_RELOC_ENTRIES {
+                break;
+            }
+            let offset = i * entry_size;
+            let (rel_offset, rel_type, sym_index, addend) = match (class, is_rela) {
+                (ElfClass::Elf32, false) => {
+                    let r_offset = u64::from(read_u32(data, offset, endianness)?);
+                    let r_info = read_u32(data, offset + 4, endianness)?;
+                    (r_offset, r_info & 0xff, r_info >> 8, None)
+                }
+                (ElfClass::Elf32, true) => {
+                    let r_offset = u64::from(read_u32(data, offset, endianness)?);
+                    let r_info = read_u32(data, offset + 4, endianness)?;
+                    let r_addend = i64::from(read_i32(data, offset + 8, endianness)?);
+                    (r_offset, r_info & 0xff, r_info >> 8, Some(r_addend))
+                }
+                (ElfClass::Elf64, false) => {
+                    let r_offset = read_u64(data, offset, endianness)?;
+                    let r_info = read_u64(data, offset + 8, endianness)?;
+                    (
+                        r_offset,
+                        (r_info & 0xffff_ffff) as u32,
+                        (r_info >> 32) as u32,
+                        None,
+                    )
+                }
+                (ElfClass::Elf64, true) => {
+                    let r_offset = read_u64(data, offset, endianness)?;
+                    let r_info = read_u64(data, offset + 8, endianness)?;
+                    let r_addend = read_i64(data, offset + 16, endianness)?;
+                    (
+                        r_offset,
+                        (r_info & 0xffff_ffff) as u32,
+                        (r_info >> 32) as u32,
+                        Some(r_addend),
+                    )
+                }
+            };
+
+            let symbol_name = symbols
+                .get(sym_index as usize)
+                .map(|s| s.name.clone())
+                .filter(|name| !name.is_empty());
+
+            relocations.push(Relocation {
+                section_name: section.name.clone(),
+                offset: rel_offset,
+                rel_type,
+                symbol_index: sym_index,
+                symbol_name,
+                addend,
+            });
+        }
+    }
+
+    Ok(relocations)
 }
 
 #[derive(Debug)]
 struct Layout {
     endianness: Endianness,
     entry_point: u64,
+    flags: u32,
     program_offset: u64,
     program_entry_size: u16,
     program_count: u16,
@@ -155,14 +744,15 @@ impl Layout {
             header_size,
             program_offset_at,
             section_offset_at,
+            flags_at,
             program_size_at,
             program_count_at,
             section_size_at,
             section_count_at,
             names_at,
         ) = match class {
-            ElfClass::Elf32 => (52, 28, 32, 42, 44, 46, 48, 50),
-            ElfClass::Elf64 => (64, 32, 40, 54, 56, 58, 60, 62),
+            ElfClass::Elf32 => (52, 28, 32, 36, 42, 44, 46, 48, 50),
+            ElfClass::Elf64 => (64, 32, 40, 48, 54, 56, 58, 60, 62),
         };
         if bytes.len() < header_size {
             return Err(malformed("file is shorter than its ELF header"));
@@ -177,6 +767,7 @@ impl Layout {
             ElfClass::Elf32 => read_u32(bytes, offset, endianness).map(u64::from),
             ElfClass::Elf64 => read_u64(bytes, offset, endianness),
         };
+        let flags = read_u32(bytes, flags_at, endianness)?;
         let program_count = read_u16(bytes, program_count_at, endianness)?;
         let section_count = read_u16(bytes, section_count_at, endianness)?;
         let section_names_index = read_u16(bytes, names_at, endianness)?;
@@ -197,6 +788,7 @@ impl Layout {
                 Endianness::Big => Endianness::Big,
             },
             entry_point: read_word(24)?,
+            flags,
             program_offset: read_word(program_offset_at)?,
             program_entry_size: read_u16(bytes, program_size_at, endianness)?,
             program_count,
@@ -247,9 +839,13 @@ fn parse_sections(
     let mut text_bytes = 0;
     let mut sections = Vec::with_capacity(raw.len());
     for (index, section) in raw.into_iter().enumerate() {
-        if section.section_type != 8 {
-            let _ = file_slice(bytes, section.offset, section.size, "section contents")?;
-        }
+        let entropy = if section.section_type != 8 && section.size > 0 {
+            let data = file_slice(bytes, section.offset, section.size, "section contents")?;
+            calculate_entropy(data)
+        } else {
+            0.0
+        };
+
         sections.push(Section {
             index: index as u16,
             name: take_text(
@@ -262,6 +858,10 @@ fn parse_sections(
             offset: section.offset,
             size: section.size,
             link: section.link,
+            info: section.info,
+            alignment: section.alignment,
+            entry_size: section.entry_size,
+            entropy,
         });
     }
     Ok(sections)
@@ -276,6 +876,9 @@ struct RawSection {
     offset: u64,
     size: u64,
     link: u32,
+    info: u32,
+    alignment: u64,
+    entry_size: u64,
 }
 
 impl RawSection {
@@ -334,6 +937,24 @@ impl RawSection {
                     .ok_or_else(|| malformed("integer overflow"))?,
                 endianness,
             )?,
+            info: read_u32(
+                bytes,
+                offset
+                    .checked_add(match class {
+                        ElfClass::Elf32 => 28,
+                        ElfClass::Elf64 => 44,
+                    })
+                    .ok_or_else(|| malformed("integer overflow"))?,
+                endianness,
+            )?,
+            alignment: word(match class {
+                ElfClass::Elf32 => 32,
+                ElfClass::Elf64 => 48,
+            })?,
+            entry_size: word(match class {
+                ElfClass::Elf32 => 36,
+                ElfClass::Elf64 => 56,
+            })?,
         })
     }
 }
@@ -531,6 +1152,13 @@ fn read_u32(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u32,
         Endianness::Big => u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]),
     })
 }
+fn read_i32(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<i32, AppError> {
+    let slice = field(bytes, offset, 4)?;
+    Ok(match endianness {
+        Endianness::Little => i32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]),
+        Endianness::Big => i32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]),
+    })
+}
 fn read_u64(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u64, AppError> {
     let slice = field(bytes, offset, 8)?;
     Ok(match endianness {
@@ -538,6 +1166,17 @@ fn read_u64(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u64,
             slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
         ]),
         Endianness::Big => u64::from_be_bytes([
+            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+        ]),
+    })
+}
+fn read_i64(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<i64, AppError> {
+    let slice = field(bytes, offset, 8)?;
+    Ok(match endianness {
+        Endianness::Little => i64::from_le_bytes([
+            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+        ]),
+        Endianness::Big => i64::from_be_bytes([
             slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
         ]),
     })
@@ -602,6 +1241,7 @@ mod tests {
         assert!(matches!(binary.elf.machine, Machine::X86_64));
         assert_eq!(binary.elf.entry_point, 0x401000);
         assert!(binary.sections.is_empty());
+        assert!(!binary.hashes.sha256.is_empty());
     }
 
     #[test]
