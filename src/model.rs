@@ -13,6 +13,50 @@ pub struct Binary {
     pub file: FileMetadata,
     /// ELF identification and header fields.
     pub elf: ElfHeader,
+    /// Sections in file order.
+    pub sections: Vec<Section>,
+    /// Program segments in file order.
+    pub segments: Vec<Segment>,
+}
+
+/// One ELF section-table entry.
+#[derive(Debug, Serialize)]
+pub struct Section {
+    /// Zero-based section-table index.
+    pub index: u16,
+    /// Terminal-safe, byte-escaped section name.
+    pub name: String,
+    /// Numeric ELF section type.
+    pub section_type: u32,
+    /// Raw ELF section flags.
+    pub flags: u64,
+    /// Virtual address.
+    pub address: u64,
+    /// File offset.
+    pub offset: u64,
+    /// Size in bytes.
+    pub size: u64,
+}
+
+/// One ELF program-header entry.
+#[derive(Debug, Serialize)]
+pub struct Segment {
+    /// Zero-based program-header index.
+    pub index: u16,
+    /// Numeric ELF segment type.
+    pub segment_type: u32,
+    /// Raw ELF segment flags.
+    pub flags: u32,
+    /// File offset.
+    pub offset: u64,
+    /// Virtual address.
+    pub virtual_address: u64,
+    /// Bytes occupied in the file.
+    pub file_size: u64,
+    /// Bytes occupied in memory.
+    pub memory_size: u64,
+    /// Required alignment.
+    pub alignment: u64,
 }
 
 /// The inspected file format.

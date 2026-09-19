@@ -13,6 +13,12 @@ use clap::Parser;
 pub struct Cli {
     /// ELF file to inspect.
     pub file: PathBuf,
+    /// Include section information.
+    #[arg(long)]
+    pub sections: bool,
+    /// Include program segments.
+    #[arg(long)]
+    pub segments: bool,
     /// Disable color (human output is currently uncolored).
     #[arg(long)]
     pub no_color: bool,

@@ -11,7 +11,7 @@
 - Parser-derived offsets, sizes, and counts use checked arithmetic and explicit caps.
 - Only regular files are accepted. Symlinks, directories, devices, and FIFOs fail before reading.
 - Malformed, truncated, and unsupported input returns a parse error, never a panic.
-- Human output escapes control bytes in binary-provided strings. JSON is emitted through `serde_json`.
+- Binary-provided strings are rendered as printable ASCII with every other byte escaped as `\xNN`; this is deterministic and terminal-safe. JSON is emitted through `serde_json`.
 - Results use owned, strongly typed domain models deriving `serde::Serialize`; deterministic vectors preserve file order.
 
 ## Dependencies

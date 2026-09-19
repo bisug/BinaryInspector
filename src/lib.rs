@@ -8,6 +8,7 @@ pub mod error;
 pub mod input;
 pub mod model;
 pub mod report;
+pub mod text;
 
 use std::path::Path;
 

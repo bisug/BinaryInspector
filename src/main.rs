@@ -22,9 +22,17 @@ fn main() -> ExitCode {
             };
         }
     };
+    let all_categories = !cli.sections && !cli.segments;
     match inspect(&cli.file) {
         Ok(binary) => {
-            print!("{}", report::human(&binary));
+            print!(
+                "{}",
+                report::human(
+                    &binary,
+                    all_categories || cli.sections,
+                    all_categories || cli.segments
+                )
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
