@@ -64,10 +64,21 @@ fn open_target(path: &Path) -> Result<fs::File, AppError> {
     use std::os::windows::fs::OpenOptionsExt;
 
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    Ok(fs::OpenOptions::new()
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    fs::OpenOptions::new()
         .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|error| {
+            if path.is_dir() {
+                AppError::InvalidFileType(
+                    "target must be a regular file (directories, FIFOs, and special devices are not supported)"
+                        .to_string(),
+                )
+            } else {
+                AppError::Io(error)
+            }
+        })
 }
 
 #[cfg(not(any(unix, windows)))]

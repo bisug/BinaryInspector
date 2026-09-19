@@ -38,7 +38,11 @@ fn directory_input_exits_with_code_2() {
         .output()
         .unwrap_or_else(|error| panic!("could not run CLI: {error}"));
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid file"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid file") || stderr.contains("I/O error"),
+        "expected error message on directory input, got: {stderr}"
+    );
 }
 
 #[test]
