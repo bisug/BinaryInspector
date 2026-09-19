@@ -10,6 +10,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- Native GUI executable with open-file, drag-and-drop, background inspection, and Phase 1–3 views.
+
+### Added
+
 - Phase 1 ELF identification and bounded regular-file input handling.
 - CLI foundation with documented exit codes and deterministic human-readable output.
 - Phase 2 section and program-segment inspection with bounds validation and terminal-safe section names.
