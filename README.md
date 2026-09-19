@@ -23,6 +23,23 @@ Symbols, hardening analysis, and JSON output are planned. See the [roadmap](ROAD
 
 ## Installation
 
+### Automated installer (Linux & macOS)
+
+Install the latest verified binaries to `~/.local/bin` and register the Linux desktop application:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bisug/BinaryInspector/main/install.sh | bash
+```
+
+Or from a local clone:
+
+```sh
+./install.sh                # Installs both CLI and GUI to ~/.local/bin
+./install.sh --cli-only     # Installs only the CLI
+./install.sh --gui-only     # Installs only the GUI
+./install.sh --from-source  # Builds from source using cargo
+```
+
 ### Pre-built binaries
 
 Download the latest pre-built binaries for Linux, macOS, and Windows from [GitHub Releases](https://github.com/bisug/BinaryInspector/releases).
