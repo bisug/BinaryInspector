@@ -2,13 +2,16 @@
 
 /// Escapes every non-printable or non-ASCII byte using a stable `\xNN` form.
 pub fn escape_bytes(bytes: &[u8]) -> String {
+    const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
     let mut output = String::with_capacity(bytes.len());
     for byte in bytes {
         match byte {
             b' '..=b'~' if *byte != b'\\' => output.push(char::from(*byte)),
             _ => {
-                use std::fmt::Write;
-                let _ = write!(output, "\\x{byte:02X}");
+                output.push('\\');
+                output.push('x');
+                output.push(HEX_UPPER[(byte >> 4) as usize] as char);
+                output.push(HEX_UPPER[(byte & 0x0f) as usize] as char);
             }
         }
     }

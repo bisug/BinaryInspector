@@ -2,11 +2,12 @@
 
 /// Computes the SHA-256 hash of a byte slice and returns it as a lowercase hexadecimal string.
 pub fn sha256_hex(data: &[u8]) -> String {
+    const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
     let hash = sha256_digest(data);
     let mut hex = String::with_capacity(64);
     for byte in hash {
-        use std::fmt::Write;
-        let _ = write!(hex, "{byte:02x}");
+        hex.push(HEX_LOWER[(byte >> 4) as usize] as char);
+        hex.push(HEX_LOWER[(byte & 0x0f) as usize] as char);
     }
     hex
 }

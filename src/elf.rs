@@ -130,12 +130,13 @@ fn analyze_mitigations(
     };
 
     // 5. Fortified functions
-    let mut fortified_functions = Vec::new();
-    for sym in symbols {
-        if sym.is_import && sym.name.ends_with("_chk") && !fortified_functions.contains(&sym.name) {
-            fortified_functions.push(sym.name.clone());
-        }
-    }
+    let mut fortified_functions: Vec<String> = symbols
+        .iter()
+        .filter(|sym| sym.is_import && sym.name.ends_with("_chk"))
+        .map(|sym| sym.name.clone())
+        .collect();
+    fortified_functions.sort_unstable();
+    fortified_functions.dedup();
 
     // 6. RWX Segments (Write + Execute permission violation)
     let rwx_segments = segments
@@ -705,9 +706,22 @@ fn parse_relocations(
                 }
             };
 
-            let symbol_name = symbols
-                .get(sym_index as usize)
-                .map(|s| s.name.clone())
+            let target_kind = sections.get(section.link as usize).map(|s| {
+                if s.section_type == 2 {
+                    SymbolTableKind::Static
+                } else {
+                    SymbolTableKind::Dynamic
+                }
+            });
+
+            let symbol_name = target_kind
+                .and_then(|kind| {
+                    symbols
+                        .iter()
+                        .filter(|s| s.table == kind)
+                        .nth(sym_index as usize)
+                        .map(|s| s.name.clone())
+                })
                 .filter(|name| !name.is_empty());
 
             relocations.push(Relocation {
@@ -1139,46 +1153,48 @@ fn malformed(message: &str) -> AppError {
 }
 
 fn read_u16(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u16, AppError> {
-    let slice = field(bytes, offset, 2)?;
+    let arr: [u8; 2] = field(bytes, offset, 2)?
+        .try_into()
+        .expect("field ensures 2 bytes");
     Ok(match endianness {
-        Endianness::Little => u16::from_le_bytes([slice[0], slice[1]]),
-        Endianness::Big => u16::from_be_bytes([slice[0], slice[1]]),
+        Endianness::Little => u16::from_le_bytes(arr),
+        Endianness::Big => u16::from_be_bytes(arr),
     })
 }
 fn read_u32(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u32, AppError> {
-    let slice = field(bytes, offset, 4)?;
+    let arr: [u8; 4] = field(bytes, offset, 4)?
+        .try_into()
+        .expect("field ensures 4 bytes");
     Ok(match endianness {
-        Endianness::Little => u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]),
-        Endianness::Big => u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]),
+        Endianness::Little => u32::from_le_bytes(arr),
+        Endianness::Big => u32::from_be_bytes(arr),
     })
 }
 fn read_i32(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<i32, AppError> {
-    let slice = field(bytes, offset, 4)?;
+    let arr: [u8; 4] = field(bytes, offset, 4)?
+        .try_into()
+        .expect("field ensures 4 bytes");
     Ok(match endianness {
-        Endianness::Little => i32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]),
-        Endianness::Big => i32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]),
+        Endianness::Little => i32::from_le_bytes(arr),
+        Endianness::Big => i32::from_be_bytes(arr),
     })
 }
 fn read_u64(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u64, AppError> {
-    let slice = field(bytes, offset, 8)?;
+    let arr: [u8; 8] = field(bytes, offset, 8)?
+        .try_into()
+        .expect("field ensures 8 bytes");
     Ok(match endianness {
-        Endianness::Little => u64::from_le_bytes([
-            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-        ]),
-        Endianness::Big => u64::from_be_bytes([
-            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-        ]),
+        Endianness::Little => u64::from_le_bytes(arr),
+        Endianness::Big => u64::from_be_bytes(arr),
     })
 }
 fn read_i64(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<i64, AppError> {
-    let slice = field(bytes, offset, 8)?;
+    let arr: [u8; 8] = field(bytes, offset, 8)?
+        .try_into()
+        .expect("field ensures 8 bytes");
     Ok(match endianness {
-        Endianness::Little => i64::from_le_bytes([
-            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-        ]),
-        Endianness::Big => i64::from_be_bytes([
-            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-        ]),
+        Endianness::Little => i64::from_le_bytes(arr),
+        Endianness::Big => i64::from_be_bytes(arr),
     })
 }
 fn field(bytes: &[u8], offset: usize, size: usize) -> Result<&[u8], AppError> {
