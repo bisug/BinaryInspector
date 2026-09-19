@@ -2,33 +2,25 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-20
 
 ### Added
 
 - Structured `ParseError` and `AppError` types with specific variants for ELF parsing, identification, limits, and file constraints.
 - Actionable UI guidance cards in GUI failed state showing failure categorization and user remediation tips.
-- Integration tests in `tests/cli.rs` covering exit codes 0, 1, 2, and 3.
-
-### Fixed
-
-- Eliminated panic paths (`.expect`) in numeric parsing helpers (`read_u16`, `read_u32`, `read_i32`, `read_u64`, `read_i64`).
-- Mapped Unix `libc::ELOOP` from `O_NOFOLLOW` and non-regular files directly to `AppError::InvalidFileType`.
-
-## [0.2.0] - 2026-09-20
-
-### Added
-
+- CLI integration tests in `tests/cli.rs` covering exit codes 0, 1, 2, and 3.
 - Security hardening analysis (`checksec`): RELRO (Full/Partial), Stack Canary, NX Stack, PIE, Fortified Functions, RWX Segments, and Insecure RPATH.
 - Symbol table inspection (`-s` / `--symbols`): static (`.symtab`) and dynamic (`.dynsym`) symbols with type, binding, visibility, and import/export identification.
 - ELF notes inspection (`-n` / `--notes`): GNU Build ID, ABI requirements, and hardware properties (x86 IBT/SHSTK, ARM BTI/PAC).
-- Relocations inspection (`-r` / `--relocations`): SHT_REL / SHT_RELA entries with symbol resolution.
+- Relocations inspection (`-r` / `--relocations`): SHT_REL / SHT_RELA entries with $O(1)$ symbol resolution.
 - Desktop GUI virtual scrolling with `show_rows` and pinned sticky headers across large symbol and relocation tables.
 - GUI interactive search filtering, sortable columns, adjustable column widths, and copy-to-clipboard buttons.
 - GUI resizable split layout with drag-and-drop file target overlay.
 
 ### Fixed
 
+- Eliminated panic paths (`.expect`) in numeric parsing helpers (`read_u16`, `read_u32`, `read_i32`, `read_u64`, `read_i64`).
+- Mapped Unix `libc::ELOOP` from `O_NOFOLLOW` and non-regular files directly to `AppError::InvalidFileType`.
 - Checksec RELRO detection now correctly recognizes `DT_BIND_NOW` (dynamic tag 24) for Full RELRO.
 - Checksec stack canary detection now recognizes `__stack_chk_fail_local` on PIC and 32-bit x86 binaries.
 - Checksec PIE detection correctly distinguishes static PIE binaries from shared libraries via `DT_DEBUG`.
