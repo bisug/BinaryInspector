@@ -3,6 +3,7 @@
 <p>
   <a href="https://github.com/bisug/BinaryInspector/actions/workflows/ci.yml"><img src="https://github.com/bisug/BinaryInspector/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/bisug/BinaryInspector/actions/workflows/gui-build.yml"><img src="https://github.com/bisug/BinaryInspector/actions/workflows/gui-build.yml/badge.svg?branch=main" alt="GUI build status"></a>
+  <a href="https://scorecard.dev/viewer/?site=github.com/bisug/BinaryInspector"><img src="https://api.scorecard.dev/projects/github.com/bisug/BinaryInspector/badge" alt="OpenSSF Scorecard"></a>
   <a href="https://github.com/bisug/BinaryInspector/releases"><img src="https://img.shields.io/github/v/release/bisug/BinaryInspector.svg" alt="Latest release"></a>
   <a href="https://github.com/bisug/BinaryInspector/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-0b6e4f.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/Rust-1.98.1%2B-b7410e.svg" alt="Rust 1.98.1 or newer">
