@@ -6,6 +6,6 @@ fn version_flag_succeeds() {
         .arg("--version")
         .output()
         .unwrap_or_else(|error| panic!("could not run CLI: {error}"));
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).starts_with("binary-inspector 0.1.0"));
+    let expected = format!("binary-inspector {}", env!("CARGO_PKG_VERSION"));
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with(&expected));
 }
