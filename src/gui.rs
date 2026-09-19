@@ -554,6 +554,8 @@ impl InspectorApp {
 }
 
 fn render_failed_state(ui: &mut egui::Ui, path: &Path, error: &AppError, choose_file: &mut bool) {
+    let (category, hint) = error.guidance();
+
     ui.centered_and_justified(|ui| {
         ui.vertical_centered(|ui| {
             ui.label(
@@ -576,6 +578,14 @@ fn render_failed_state(ui: &mut egui::Ui, path: &Path, error: &AppError, choose_
                 .inner_margin(egui::Margin::symmetric(24, 16));
 
             error_box.show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(category)
+                        .strong()
+                        .color(egui::Color32::from_rgb(230, 100, 100)),
+                );
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(hint).color(ui.visuals().weak_text_color()));
+                ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new(error.to_string())
                         .color(egui::Color32::from_rgb(230, 80, 80))

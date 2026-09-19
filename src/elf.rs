@@ -1,7 +1,7 @@
 //! Bounded decoding of ELF headers, sections, program segments, symbols, notes, relocations, and security mitigations.
 
 use crate::{
-    error::AppError,
+    error::{AppError, ParseError},
     hash::{calculate_entropy, sha256_hex},
     model::{
         Binary, DynamicEntry, DynamicInfo, ElfClass, ElfHeader, ElfNote, ElfType, Endianness,
@@ -25,22 +25,25 @@ const MAX_TOTAL_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     let ident = bytes
         .get(..ELF_IDENT_SIZE)
-        .ok_or_else(|| malformed("file is shorter than the ELF identifier"))?;
+        .ok_or(ParseError::FileTooShort {
+            actual: bytes.len(),
+            expected: ELF_IDENT_SIZE,
+        })?;
     if ident.get(..4) != Some(b"\x7fELF") {
-        return Err(malformed("not an ELF file"));
+        return Err(ParseError::InvalidMagic.into());
     }
     if ident[6] != 1 {
-        return Err(malformed("unsupported ELF identifier version"));
+        return Err(ParseError::UnsupportedVersion(ident[6]).into());
     }
     let class = match ident[4] {
         1 => ElfClass::Elf32,
         2 => ElfClass::Elf64,
-        value => return Err(malformed(&format!("unsupported ELF class {value}"))),
+        value => return Err(ParseError::UnsupportedClass(value).into()),
     };
     let endianness = match ident[5] {
         1 => Endianness::Little,
         2 => Endianness::Big,
-        value => return Err(malformed(&format!("unsupported ELF endianness {value}"))),
+        value => return Err(ParseError::UnsupportedEndianness(value).into()),
     };
     let layout = Layout::read(bytes, &class, &endianness)?;
     let sections = parse_sections(bytes, &class, &endianness, &layout)?;
@@ -217,9 +220,11 @@ fn dynamic_info(
         return Err(malformed("dynamic section has an invalid entry size"));
     }
     if data.len() / width > MAX_DYNAMIC_ENTRIES {
-        return Err(malformed(
-            "dynamic entry count exceeds the inspection limit",
-        ));
+        return Err(ParseError::LimitExceeded {
+            what: "dynamic table entries",
+            limit: MAX_DYNAMIC_ENTRIES,
+        }
+        .into());
     }
     let table = file_slice(bytes, strings.offset, strings.size, "dynamic string table")?;
     let mut text_bytes = 0;
@@ -818,13 +823,23 @@ impl Layout {
             ElfClass::Elf64 => (64, 32, 40, 48, 54, 56, 58, 60, 62),
         };
         if bytes.len() < header_size {
-            return Err(malformed("file is shorter than its ELF header"));
+            return Err(ParseError::FileTooShort {
+                actual: bytes.len(),
+                expected: header_size,
+            }
+            .into());
         }
-        if read_u32(bytes, 20, endianness)? != 1 {
-            return Err(malformed("unsupported ELF header version"));
+        let hdr_version = read_u32(bytes, 20, endianness)?;
+        if hdr_version != 1 {
+            return Err(ParseError::UnsupportedVersion(hdr_version as u8).into());
         }
-        if usize::from(read_u16(bytes, header_size - 12, endianness)?) != header_size {
-            return Err(malformed("invalid ELF header size"));
+        let actual_hdr_size = usize::from(read_u16(bytes, header_size - 12, endianness)?);
+        if actual_hdr_size != header_size {
+            return Err(ParseError::InvalidHeader {
+                what: "ELF header size",
+                detail: format!("e_ehsize is {actual_hdr_size}, expected {header_size}"),
+            }
+            .into());
         }
         let read_word = |offset| match class {
             ElfClass::Elf32 => read_u32(bytes, offset, endianness).map(u64::from),
@@ -840,10 +855,19 @@ impl Layout {
         {
             return Err(malformed("extended ELF table numbering is unsupported"));
         }
-        if program_count > MAX_TABLE_ENTRIES || section_count > MAX_TABLE_ENTRIES {
-            return Err(malformed(
-                "ELF table entry count exceeds the inspection limit",
-            ));
+        if program_count > MAX_TABLE_ENTRIES {
+            return Err(ParseError::LimitExceeded {
+                what: "program header entries",
+                limit: usize::from(MAX_TABLE_ENTRIES),
+            }
+            .into());
+        }
+        if section_count > MAX_TABLE_ENTRIES {
+            return Err(ParseError::LimitExceeded {
+                what: "section header entries",
+                limit: usize::from(MAX_TABLE_ENTRIES),
+            }
+            .into());
         }
         Ok(Self {
             endianness: match endianness {
@@ -1120,14 +1144,18 @@ fn validate_table(
     entry_size: u16,
     count: u16,
     expected: u16,
-    name: &str,
+    name: &'static str,
 ) -> Result<(), AppError> {
     if entry_size < expected {
-        return Err(malformed(&format!("invalid {name} entry size")));
+        return Err(ParseError::InvalidHeader {
+            what: name,
+            detail: format!("entry size ({entry_size}) is smaller than required ({expected})"),
+        }
+        .into());
     }
     let total = u64::from(entry_size)
         .checked_mul(u64::from(count))
-        .ok_or_else(|| malformed("integer overflow"))?;
+        .ok_or(ParseError::IntegerOverflow(name))?;
     let _ = file_slice(bytes, offset, total, name)?;
     Ok(())
 }
@@ -1137,124 +1165,134 @@ fn table_offset(base: u64, entry_size: u16, index: u16) -> Result<usize, AppErro
         .checked_add(
             u64::from(entry_size)
                 .checked_mul(u64::from(index))
-                .ok_or_else(|| malformed("integer overflow"))?,
+                .ok_or(ParseError::IntegerOverflow("table entry offset"))?,
         )
-        .ok_or_else(|| malformed("integer overflow"))?;
-    usize::try_from(offset).map_err(|_| malformed("offset does not fit this host"))
+        .ok_or(ParseError::IntegerOverflow("table entry offset"))?;
+    usize::try_from(offset)
+        .map_err(|_| ParseError::IntegerOverflow("table offset host conversion").into())
 }
 
 fn file_slice<'a>(
     bytes: &'a [u8],
     offset: u64,
     size: u64,
-    what: &str,
+    what: &'static str,
 ) -> Result<&'a [u8], AppError> {
     let end = offset
         .checked_add(size)
-        .ok_or_else(|| malformed("integer overflow"))?;
-    let start = usize::try_from(offset).map_err(|_| malformed("offset does not fit this host"))?;
-    let end = usize::try_from(end).map_err(|_| malformed("offset does not fit this host"))?;
+        .ok_or(ParseError::IntegerOverflow(what))?;
+    let start =
+        usize::try_from(offset).map_err(|_| ParseError::OutOfBounds { what, offset, size })?;
+    let end = usize::try_from(end).map_err(|_| ParseError::OutOfBounds { what, offset, size })?;
     bytes
         .get(start..end)
-        .ok_or_else(|| malformed(&format!("{what} is outside the file")))
+        .ok_or_else(|| ParseError::OutOfBounds { what, offset, size }.into())
 }
 
 fn string_at(table: &[u8], offset: u32) -> Result<String, AppError> {
-    let bytes = table
-        .get(
-            usize::try_from(offset)
-                .map_err(|_| malformed("string offset does not fit this host"))?..,
-        )
-        .ok_or_else(|| malformed("section name is outside its string table"))?;
+    let start = usize::try_from(offset)
+        .map_err(|_| ParseError::IntegerOverflow("string offset host conversion"))?;
+    let bytes = table.get(start..).ok_or(ParseError::OutOfBounds {
+        what: "section name in string table",
+        offset: u64::from(offset),
+        size: 1,
+    })?;
     let end = bytes
         .iter()
         .take(MAX_STRING_BYTES + 1)
         .position(|byte| *byte == 0)
-        .ok_or_else(|| malformed("string is unterminated or exceeds the inspection limit"))?;
+        .ok_or(ParseError::InvalidStringTable("section name"))?;
     Ok(escape_bytes(&bytes[..end]))
 }
 
-fn c_string(bytes: &[u8], what: &str) -> Result<String, AppError> {
+fn c_string(bytes: &[u8], what: &'static str) -> Result<String, AppError> {
     let end = bytes
         .iter()
         .take(MAX_STRING_BYTES + 1)
         .position(|byte| *byte == 0)
-        .ok_or_else(|| {
-            malformed(&format!(
-                "{what} is unterminated or exceeds the inspection limit"
-            ))
-        })?;
+        .ok_or(ParseError::InvalidStringTable(what))?;
     Ok(escape_bytes(&bytes[..end]))
 }
 
 fn take_text(text: String, total: &mut usize) -> Result<String, AppError> {
     *total = total
         .checked_add(text.len())
-        .ok_or_else(|| malformed("text size overflow"))?;
+        .ok_or(ParseError::IntegerOverflow("decoded text size"))?;
     if *total > MAX_TOTAL_TEXT_BYTES {
-        return Err(malformed("decoded text exceeds the inspection limit"));
+        return Err(ParseError::LimitExceeded {
+            what: "decoded text size",
+            limit: MAX_TOTAL_TEXT_BYTES,
+        }
+        .into());
     }
     Ok(text)
 }
 
 fn malformed(message: &str) -> AppError {
-    AppError::Parse(format!("malformed ELF: {message}"))
+    AppError::Parse(ParseError::Malformed(format!("malformed ELF: {message}")))
 }
 
 fn read_u16(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u16, AppError> {
-    let arr: [u8; 2] = field(bytes, offset, 2)?
-        .try_into()
-        .expect("field ensures 2 bytes");
+    let slice = field(bytes, offset, 2)?;
+    let arr = [slice[0], slice[1]];
     Ok(match endianness {
         Endianness::Little => u16::from_le_bytes(arr),
         Endianness::Big => u16::from_be_bytes(arr),
     })
 }
+
 fn read_u32(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u32, AppError> {
-    let arr: [u8; 4] = field(bytes, offset, 4)?
-        .try_into()
-        .expect("field ensures 4 bytes");
+    let slice = field(bytes, offset, 4)?;
+    let arr = [slice[0], slice[1], slice[2], slice[3]];
     Ok(match endianness {
         Endianness::Little => u32::from_le_bytes(arr),
         Endianness::Big => u32::from_be_bytes(arr),
     })
 }
+
 fn read_i32(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<i32, AppError> {
-    let arr: [u8; 4] = field(bytes, offset, 4)?
-        .try_into()
-        .expect("field ensures 4 bytes");
+    let slice = field(bytes, offset, 4)?;
+    let arr = [slice[0], slice[1], slice[2], slice[3]];
     Ok(match endianness {
         Endianness::Little => i32::from_le_bytes(arr),
         Endianness::Big => i32::from_be_bytes(arr),
     })
 }
+
 fn read_u64(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<u64, AppError> {
-    let arr: [u8; 8] = field(bytes, offset, 8)?
-        .try_into()
-        .expect("field ensures 8 bytes");
+    let slice = field(bytes, offset, 8)?;
+    let arr = [
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ];
     Ok(match endianness {
         Endianness::Little => u64::from_le_bytes(arr),
         Endianness::Big => u64::from_be_bytes(arr),
     })
 }
+
 fn read_i64(bytes: &[u8], offset: usize, endianness: &Endianness) -> Result<i64, AppError> {
-    let arr: [u8; 8] = field(bytes, offset, 8)?
-        .try_into()
-        .expect("field ensures 8 bytes");
+    let slice = field(bytes, offset, 8)?;
+    let arr = [
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ];
     Ok(match endianness {
         Endianness::Little => i64::from_le_bytes(arr),
         Endianness::Big => i64::from_be_bytes(arr),
     })
 }
+
 fn field(bytes: &[u8], offset: usize, size: usize) -> Result<&[u8], AppError> {
-    bytes
-        .get(
-            offset
-                ..offset
-                    .checked_add(size)
-                    .ok_or_else(|| malformed("integer overflow"))?,
-        )
-        .ok_or_else(|| malformed("truncated numeric field"))
+    let end = offset
+        .checked_add(size)
+        .ok_or(ParseError::IntegerOverflow("field offset"))?;
+    bytes.get(offset..end).ok_or_else(|| {
+        ParseError::OutOfBounds {
+            what: "numeric field",
+            offset: offset as u64,
+            size: size as u64,
+        }
+        .into()
+    })
 }
 
 fn elf_type(value: u16) -> ElfType {

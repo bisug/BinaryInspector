@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Structured `ParseError` and `AppError` types with specific variants for ELF parsing, identification, limits, and file constraints.
+- Actionable UI guidance cards in GUI failed state showing failure categorization and user remediation tips.
+- Integration tests in `tests/cli.rs` covering exit codes 0, 1, 2, and 3.
+
+### Fixed
+
+- Eliminated panic paths (`.expect`) in numeric parsing helpers (`read_u16`, `read_u32`, `read_i32`, `read_u64`, `read_i64`).
+- Mapped Unix `libc::ELOOP` from `O_NOFOLLOW` and non-regular files directly to `AppError::InvalidFileType`.
+
 ## [0.2.0] - 2026-09-20
 
 ### Added

@@ -10,16 +10,22 @@ const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, AppError> {
     let mut file = open_target(path)?;
     let metadata = file.metadata()?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "target must be a regular file",
-        )));
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::InvalidFileType(
+            "symbolic links are not accepted".to_string(),
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(AppError::InvalidFileType(
+            "target must be a regular file (directories, FIFOs, and special devices are not supported)"
+                .to_string(),
+        ));
     }
     if metadata.len() > MAX_FILE_BYTES {
-        return Err(AppError::Parse(format!(
-            "file exceeds the {MAX_FILE_BYTES}-byte inspection limit"
-        )));
+        return Err(AppError::FileTooLarge {
+            size: metadata.len(),
+            limit: MAX_FILE_BYTES,
+        });
     }
 
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
@@ -27,9 +33,10 @@ pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, AppError> {
         .take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(AppError::Parse(format!(
-            "file exceeds the {MAX_FILE_BYTES}-byte inspection limit"
-        )));
+        return Err(AppError::FileTooLarge {
+            size: bytes.len() as u64,
+            limit: MAX_FILE_BYTES,
+        });
     }
     Ok(bytes)
 }
@@ -38,11 +45,18 @@ pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, AppError> {
 fn open_target(path: &Path) -> Result<fs::File, AppError> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    Ok(fs::OpenOptions::new()
+    fs::OpenOptions::new()
         .read(true)
         // Prevent symlink traversal and avoid blocking when a path is swapped for a FIFO.
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?)
+        .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                AppError::InvalidFileType("symbolic links are not accepted".to_string())
+            } else {
+                AppError::Io(error)
+            }
+        })
 }
 
 #[cfg(windows)]
@@ -76,7 +90,17 @@ mod tests {
         fs::write(&target, b"data").unwrap_or_else(|error| panic!("{error}"));
         symlink(&target, &link).unwrap_or_else(|error| panic!("{error}"));
 
-        assert!(read_regular_file(&link).is_err());
+        let err = read_regular_file(&link).expect_err("symlink must fail");
+        assert!(matches!(err, crate::error::AppError::InvalidFileType(_)));
+        fs::remove_dir_all(directory).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn rejects_a_directory() {
+        let directory = env::temp_dir().join(format!("binary-inspector-dir-{}", process::id()));
+        fs::create_dir_all(&directory).unwrap_or_else(|error| panic!("{error}"));
+        let err = read_regular_file(&directory).expect_err("directory must fail");
+        assert!(matches!(err, crate::error::AppError::InvalidFileType(_)));
         fs::remove_dir_all(directory).unwrap_or_else(|error| panic!("{error}"));
     }
 }
