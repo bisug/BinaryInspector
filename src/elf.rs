@@ -11,6 +11,9 @@ use crate::{
 
 const ELF_IDENT_SIZE: usize = 16;
 const MAX_TABLE_ENTRIES: u16 = 65_534;
+const MAX_DYNAMIC_ENTRIES: usize = 16_384;
+const MAX_STRING_BYTES: usize = 4_096;
+const MAX_TOTAL_TEXT_BYTES: usize = 1024 * 1024;
 
 /// Parses Phase 1 and 2 ELF metadata from an owned byte buffer.
 pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
@@ -71,11 +74,7 @@ fn dynamic_info(
             interpreter.file_size,
             "interpreter",
         )?;
-        let end = value
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or_else(|| malformed("unterminated interpreter"))?;
-        info.interpreter = Some(escape_bytes(&value[..end]));
+        info.interpreter = Some(c_string(value, "interpreter")?);
     }
     let Some(dynamic) = sections.iter().find(|section| section.section_type == 6) else {
         return Ok(info);
@@ -86,6 +85,11 @@ fn dynamic_info(
                 .map_err(|_| malformed("dynamic string-table index is too large"))?,
         )
         .ok_or_else(|| malformed("dynamic string-table index is outside the section table"))?;
+    if strings.section_type != 3 {
+        return Err(malformed(
+            "dynamic string-table link does not reference a string table",
+        ));
+    }
     let data = file_slice(bytes, dynamic.offset, dynamic.size, "dynamic section")?;
     let width = match class {
         ElfClass::Elf32 => 8,
@@ -94,7 +98,13 @@ fn dynamic_info(
     if data.len() % width != 0 {
         return Err(malformed("dynamic section has an invalid entry size"));
     }
+    if data.len() / width > MAX_DYNAMIC_ENTRIES {
+        return Err(malformed(
+            "dynamic entry count exceeds the inspection limit",
+        ));
+    }
     let table = file_slice(bytes, strings.offset, strings.size, "dynamic string table")?;
+    let mut text_bytes = 0;
     for offset in (0..data.len()).step_by(width) {
         let tag = match class {
             ElfClass::Elf32 => u64::from(read_u32(data, offset, endianness)?),
@@ -115,9 +125,9 @@ fn dynamic_info(
             )
         };
         match tag {
-            1 => info.needed.push(text()?),
-            15 => info.rpath = Some(text()?),
-            29 => info.runpath = Some(text()?),
+            1 => info.needed.push(take_text(text()?, &mut text_bytes)?),
+            15 => info.rpath = Some(take_text(text()?, &mut text_bytes)?),
+            29 => info.runpath = Some(take_text(text()?, &mut text_bytes)?),
             30 if value & 8 != 0 => info.bind_now = true,
             0x6fff_fffb if value & 1 != 0 => info.bind_now = true,
             _ => {}
@@ -230,22 +240,31 @@ fn parse_sections(
         raw.push(RawSection::read(bytes, offset, class, endianness)?);
     }
     let names = &raw[usize::from(layout.section_names_index)];
+    if names.section_type != 3 {
+        return Err(malformed("section-name table is not a string table"));
+    }
     let string_table = file_slice(bytes, names.offset, names.size, "section-name string table")?;
-    raw.into_iter()
-        .enumerate()
-        .map(|(index, section)| {
-            Ok(Section {
-                index: index as u16,
-                name: string_at(string_table, section.name_offset)?,
-                section_type: section.section_type,
-                flags: section.flags,
-                address: section.address,
-                offset: section.offset,
-                size: section.size,
-                link: section.link,
-            })
-        })
-        .collect()
+    let mut text_bytes = 0;
+    let mut sections = Vec::with_capacity(raw.len());
+    for (index, section) in raw.into_iter().enumerate() {
+        if section.section_type != 8 {
+            let _ = file_slice(bytes, section.offset, section.size, "section contents")?;
+        }
+        sections.push(Section {
+            index: index as u16,
+            name: take_text(
+                string_at(string_table, section.name_offset)?,
+                &mut text_bytes,
+            )?,
+            section_type: section.section_type,
+            flags: section.flags,
+            address: section.address,
+            offset: section.offset,
+            size: section.size,
+            link: section.link,
+        });
+    }
+    Ok(sections)
 }
 
 #[derive(Debug)]
@@ -465,9 +484,33 @@ fn string_at(table: &[u8], offset: u32) -> Result<String, AppError> {
         .ok_or_else(|| malformed("section name is outside its string table"))?;
     let end = bytes
         .iter()
+        .take(MAX_STRING_BYTES + 1)
         .position(|byte| *byte == 0)
-        .ok_or_else(|| malformed("unterminated section name"))?;
+        .ok_or_else(|| malformed("string is unterminated or exceeds the inspection limit"))?;
     Ok(escape_bytes(&bytes[..end]))
+}
+
+fn c_string(bytes: &[u8], what: &str) -> Result<String, AppError> {
+    let end = bytes
+        .iter()
+        .take(MAX_STRING_BYTES + 1)
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| {
+            malformed(&format!(
+                "{what} is unterminated or exceeds the inspection limit"
+            ))
+        })?;
+    Ok(escape_bytes(&bytes[..end]))
+}
+
+fn take_text(text: String, total: &mut usize) -> Result<String, AppError> {
+    *total = total
+        .checked_add(text.len())
+        .ok_or_else(|| malformed("text size overflow"))?;
+    if *total > MAX_TOTAL_TEXT_BYTES {
+        return Err(malformed("decoded text exceeds the inspection limit"));
+    }
+    Ok(text)
 }
 
 fn malformed(message: &str) -> AppError {
@@ -540,7 +583,7 @@ fn os_abi(value: u8) -> OsAbi {
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{parse, string_at, MAX_STRING_BYTES};
     use crate::model::{ElfClass, Endianness, Machine};
 
     #[test]
@@ -579,6 +622,7 @@ mod tests {
         bytes[60..62].copy_from_slice(&2_u16.to_le_bytes());
         bytes[62..64].copy_from_slice(&1_u16.to_le_bytes());
         bytes[128..132].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[132..136].copy_from_slice(&3_u32.to_le_bytes());
         bytes[128 + 24..128 + 32].copy_from_slice(&192_u64.to_le_bytes());
         bytes[128 + 32..128 + 40].copy_from_slice(&8_u64.to_le_bytes());
         bytes[192..200].copy_from_slice(b"\0.bad\x1b\0\0");
@@ -586,5 +630,32 @@ mod tests {
         let binary = parse(&bytes, 200).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(binary.sections.len(), 2);
         assert_eq!(binary.sections[1].name, ".bad\\x1B");
+    }
+
+    #[test]
+    fn rejects_a_section_outside_the_file() {
+        let mut bytes = vec![0_u8; 200];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[40..48].copy_from_slice(&64_u64.to_le_bytes());
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[58..60].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[60..62].copy_from_slice(&2_u16.to_le_bytes());
+        bytes[62..64].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[68..72].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[88..96].copy_from_slice(&200_u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[132..136].copy_from_slice(&3_u32.to_le_bytes());
+        bytes[128 + 24..128 + 32].copy_from_slice(&192_u64.to_le_bytes());
+        bytes[128 + 32..128 + 40].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[192] = 0;
+
+        assert!(parse(&bytes, 200).is_err());
+    }
+
+    #[test]
+    fn rejects_an_oversized_string() {
+        assert!(string_at(&vec![b'a'; MAX_STRING_BYTES + 1], 0).is_err());
     }
 }

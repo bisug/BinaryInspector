@@ -1,0 +1,36 @@
+name: Native GUI build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+          - name: macOS
+            os: macos-latest
+          - name: Windows x86_64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - run: cargo build --release --locked --bin binary-inspector-gui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-inspector-gui-${{ runner.os }}
+          path: target/release/binary-inspector-gui*
+          if-no-files-found: error

@@ -6,7 +6,8 @@
 4. Dependencies: dynamic table, interpreter, RPATH, and RUNPATH.
 5. Symbols: `.symtab` and `.dynsym`; stripped binaries remain successful inspections.
 6. Security: PIE, NX, RELRO, and stack-canary indicators.
-7. JSON: versioned schema and filter combinations.
-8. Hardening: cross-architecture fixtures, malformed and fuzz-derived regressions, then `cargo-fuzz`.
+7. Native GUI: Linux, macOS, and Windows executable builds; file picker, drag-and-drop, and Phase 1–3 inspection views.
+8. JSON: versioned schema and filter combinations.
+9. Hardening: cross-architecture fixtures, malformed and fuzz-derived regressions, then `cargo-fuzz`.
 
 Deferred: C++ and Rust symbol demangling, PE/Mach-O decoding, disassembly, and all network-based enrichment.

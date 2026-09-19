@@ -28,6 +28,14 @@ cargo build --release
 
 The executable is `target/release/binary-inspector`.
 
+To build the native desktop application:
+
+```sh
+cargo build --release --bin binary-inspector-gui
+```
+
+The GUI executable is `target/release/binary-inspector-gui` (`.exe` on Windows). It supports Open File and drag-and-drop, and presents Overview, Sections, Segments, and Dependencies views. It uses the same safe inspection core as the CLI.
+
 ## Usage
 
 ```text

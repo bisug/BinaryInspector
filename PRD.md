@@ -10,9 +10,10 @@ BinaryInspector is a local command-line tool that reports facts about ELF execut
 4. Report static and dynamic symbols, including stripped-file status.
 5. Report reliably detectable hardening properties: PIE, NX, RELRO, and stack-canary references.
 6. Emit a stable versioned JSON representation and support category filters.
+7. Provide a native desktop GUI for Linux, macOS, and Windows that reuses the same inspection core.
 
-No flag prints all categories. `--sections`, `--segments`, `--symbols`, `--dependencies`, and `--security` combine. `--json` writes JSON only to stdout. Human output honors `NO_COLOR` and `--no-color`.
+No flag prints all categories. `--sections`, `--segments`, `--symbols`, `--dependencies`, and `--security` combine. `--json` writes JSON only to stdout. Human output honors `NO_COLOR` and `--no-color`. The GUI offers file selection and drag-and-drop; it must preserve the CLI's no-execution guarantee.
 
 ## Out of scope
 
-Disassembly, execution or loading, malware scoring, runtime network lookups, GUI/TUI work, and PE/Mach-O parsing are excluded.
+Disassembly, execution or loading, malware scoring, runtime network lookups, and PE/Mach-O parsing are excluded.

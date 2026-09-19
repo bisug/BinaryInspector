@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="BinaryInspector">
+  <rect width="128" height="128" rx="24" fill="#101827"/>
+  <path d="M34 36h38l22 22v34H34z" fill="#5b5bd6"/>
+  <path d="M72 36v24h22" fill="#8c8ce8"/>
+  <circle cx="57" cy="77" r="14" fill="none" stroke="#fff" stroke-width="7"/>
+  <path d="m68 88 14 14" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+</svg>
