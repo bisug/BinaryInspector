@@ -1,0 +1,16 @@
+name: Bug report
+description: Report incorrect behavior or a parsing failure.
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Include the command, expected result, and actual result. Do not attach sensitive binaries.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Version
+      placeholder: binary-inspector --version
+    validations:
+      required: true
