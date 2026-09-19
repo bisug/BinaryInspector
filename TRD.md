@@ -10,6 +10,7 @@
 ## Design constraints
 
 - Parser-derived offsets, sizes, and counts use checked arithmetic and explicit caps.
+- Decoded strings, total emitted text, and dynamic-table entries have explicit caps so malformed inputs cannot turn bounded file bytes into unbounded work or allocations.
 - Only regular files are accepted. Symlinks, directories, devices, and FIFOs fail before reading.
 - Malformed, truncated, and unsupported input returns a parse error, never a panic.
 - Binary-provided strings are rendered as printable ASCII with every other byte escaped as `\xNN`; this is deterministic and terminal-safe. JSON is emitted through `serde_json`.

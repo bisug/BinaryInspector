@@ -54,6 +54,9 @@ impl Default for InspectorApp {
 
 impl InspectorApp {
     fn inspect(&mut self, path: PathBuf) {
+        if matches!(&self.inspection, Inspection::Loading(_)) {
+            return;
+        }
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn({
             let path = path.clone();

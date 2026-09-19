@@ -12,6 +12,12 @@ All notable changes to this project are documented here.
 
 - Native GUI executable with open-file, drag-and-drop, background inspection, and Phase 1–3 views.
 
+### Security
+
+- Capped decoded ELF strings, dynamic-table work, and total emitted text.
+- Validated all on-disk section ranges and dynamic string-table links.
+- Hardened Unix target opening against symlink traversal and FIFO replacement races.
+
 ### Added
 
 - Phase 1 ELF identification and bounded regular-file input handling.
