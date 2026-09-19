@@ -13,7 +13,7 @@ use binary_inspector::{
     inspect,
     model::{
         Binary, ElfNote, PieStatus, Relocation, Relro, Section, SecurityMitigations, Segment,
-        Symbol, SymbolType,
+        Symbol, SymbolBinding, SymbolType,
     },
 };
 use eframe::egui;
@@ -204,6 +204,10 @@ impl InspectorApp {
     }
 
     fn poll(&mut self, context: &egui::Context) {
+        if matches!(&self.inspection, Inspection::Loading(_)) {
+            context.request_repaint_after(Duration::from_millis(50));
+        }
+
         let result = match &self.inspection {
             Inspection::Loading(receiver) => receiver.try_recv().ok(),
             _ => None,
@@ -1147,8 +1151,24 @@ impl ViewState {
         match self.symbol_sort {
             SymbolSort::Index => visible.sort_by_key(|s| s.index),
             SymbolSort::Name => visible.sort_by_key(|s| &s.name),
-            SymbolSort::Type => visible.sort_by_key(|s| s.sym_type.to_string()),
-            SymbolSort::Binding => visible.sort_by_key(|s| s.binding.to_string()),
+            SymbolSort::Type => visible.sort_by_key(|s| match &s.sym_type {
+                SymbolType::NoType => 0,
+                SymbolType::Object => 1,
+                SymbolType::Func => 2,
+                SymbolType::Section => 3,
+                SymbolType::File => 4,
+                SymbolType::Common => 5,
+                SymbolType::Tls => 6,
+                SymbolType::GnuIfunc => 7,
+                SymbolType::Other(v) => 8 + *v as u16,
+            }),
+            SymbolSort::Binding => visible.sort_by_key(|s| match &s.binding {
+                SymbolBinding::Local => 0,
+                SymbolBinding::Global => 1,
+                SymbolBinding::Weak => 2,
+                SymbolBinding::GnuUnique => 3,
+                SymbolBinding::Other(v) => 4 + *v as u16,
+            }),
             SymbolSort::Address => visible.sort_by_key(|s| s.value),
             SymbolSort::Size => visible.sort_by_key(|s| s.size),
         }
@@ -1166,129 +1186,132 @@ impl ViewState {
             ui.available_height()
         };
 
-        // Table
+        // Sticky Table Header
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+
+            let sort_field = self.symbol_sort;
+            let sort_asc = self.symbol_sort_asc;
+
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[0],
+                DEFAULT_SYMBOL_COL_WIDTHS[0],
+                35.0,
+                "Idx",
+                sort_arrow(sort_field == SymbolSort::Index, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.symbol_sort,
+                        SymbolSort::Index,
+                        &mut self.symbol_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[1],
+                DEFAULT_SYMBOL_COL_WIDTHS[1],
+                100.0,
+                "Name",
+                sort_arrow(sort_field == SymbolSort::Name, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.symbol_sort,
+                        SymbolSort::Name,
+                        &mut self.symbol_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[2],
+                DEFAULT_SYMBOL_COL_WIDTHS[2],
+                60.0,
+                "Type",
+                sort_arrow(sort_field == SymbolSort::Type, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.symbol_sort,
+                        SymbolSort::Type,
+                        &mut self.symbol_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[3],
+                DEFAULT_SYMBOL_COL_WIDTHS[3],
+                60.0,
+                "Binding",
+                sort_arrow(sort_field == SymbolSort::Binding, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.symbol_sort,
+                        SymbolSort::Binding,
+                        &mut self.symbol_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[4],
+                DEFAULT_SYMBOL_COL_WIDTHS[4],
+                60.0,
+                "Visibility",
+                None,
+                || {},
+            );
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[5],
+                DEFAULT_SYMBOL_COL_WIDTHS[5],
+                80.0,
+                "Address",
+                sort_arrow(sort_field == SymbolSort::Address, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.symbol_sort,
+                        SymbolSort::Address,
+                        &mut self.symbol_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[6],
+                DEFAULT_SYMBOL_COL_WIDTHS[6],
+                50.0,
+                "Size",
+                sort_arrow(sort_field == SymbolSort::Size, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.symbol_sort,
+                        SymbolSort::Size,
+                        &mut self.symbol_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.symbol_col_widths[7],
+                DEFAULT_SYMBOL_COL_WIDTHS[7],
+                50.0,
+                "Table",
+                None,
+                || {},
+            );
+        });
+
+        ui.separator();
+
+        let num_rows = visible.len();
+        let row_height = 24.0;
         egui::ScrollArea::both()
             .max_height(table_avail_height)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-
-                    let sort_field = self.symbol_sort;
-                    let sort_asc = self.symbol_sort_asc;
-
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[0],
-                        DEFAULT_SYMBOL_COL_WIDTHS[0],
-                        35.0,
-                        "Idx",
-                        sort_arrow(sort_field == SymbolSort::Index, sort_asc),
-                        || {
-                            toggle_sort(
-                                &mut self.symbol_sort,
-                                SymbolSort::Index,
-                                &mut self.symbol_sort_asc,
-                            )
-                        },
-                    );
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[1],
-                        DEFAULT_SYMBOL_COL_WIDTHS[1],
-                        100.0,
-                        "Name",
-                        sort_arrow(sort_field == SymbolSort::Name, sort_asc),
-                        || {
-                            toggle_sort(
-                                &mut self.symbol_sort,
-                                SymbolSort::Name,
-                                &mut self.symbol_sort_asc,
-                            )
-                        },
-                    );
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[2],
-                        DEFAULT_SYMBOL_COL_WIDTHS[2],
-                        60.0,
-                        "Type",
-                        sort_arrow(sort_field == SymbolSort::Type, sort_asc),
-                        || {
-                            toggle_sort(
-                                &mut self.symbol_sort,
-                                SymbolSort::Type,
-                                &mut self.symbol_sort_asc,
-                            )
-                        },
-                    );
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[3],
-                        DEFAULT_SYMBOL_COL_WIDTHS[3],
-                        60.0,
-                        "Binding",
-                        sort_arrow(sort_field == SymbolSort::Binding, sort_asc),
-                        || {
-                            toggle_sort(
-                                &mut self.symbol_sort,
-                                SymbolSort::Binding,
-                                &mut self.symbol_sort_asc,
-                            )
-                        },
-                    );
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[4],
-                        DEFAULT_SYMBOL_COL_WIDTHS[4],
-                        60.0,
-                        "Visibility",
-                        None,
-                        || {},
-                    );
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[5],
-                        DEFAULT_SYMBOL_COL_WIDTHS[5],
-                        80.0,
-                        "Address",
-                        sort_arrow(sort_field == SymbolSort::Address, sort_asc),
-                        || {
-                            toggle_sort(
-                                &mut self.symbol_sort,
-                                SymbolSort::Address,
-                                &mut self.symbol_sort_asc,
-                            )
-                        },
-                    );
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[6],
-                        DEFAULT_SYMBOL_COL_WIDTHS[6],
-                        50.0,
-                        "Size",
-                        sort_arrow(sort_field == SymbolSort::Size, sort_asc),
-                        || {
-                            toggle_sort(
-                                &mut self.symbol_sort,
-                                SymbolSort::Size,
-                                &mut self.symbol_sort_asc,
-                            )
-                        },
-                    );
-                    render_col_header(
-                        ui,
-                        &mut self.symbol_col_widths[7],
-                        DEFAULT_SYMBOL_COL_WIDTHS[7],
-                        50.0,
-                        "Table",
-                        None,
-                        || {},
-                    );
-                });
-
-                ui.separator();
-
-                for sym in visible {
+            .show_rows(ui, row_height, num_rows, |ui, row_range| {
+                for idx in row_range {
+                    let sym = visible[idx];
                     let is_selected = self.selected_symbol == Some(sym.index);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
@@ -2340,60 +2363,64 @@ impl ViewState {
         ui.small(format!("Showing {} relocations", visible.len()));
         ui.add_space(4.0);
 
-        egui::ScrollArea::both().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+        // Sticky Table Header
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
 
-                render_col_header(
-                    ui,
-                    &mut self.reloc_col_widths[0],
-                    DEFAULT_RELOC_COL_WIDTHS[0],
-                    80.0,
-                    "Offset",
-                    None,
-                    || {},
-                );
-                render_col_header(
-                    ui,
-                    &mut self.reloc_col_widths[1],
-                    DEFAULT_RELOC_COL_WIDTHS[1],
-                    50.0,
-                    "Type",
-                    None,
-                    || {},
-                );
-                render_col_header(
-                    ui,
-                    &mut self.reloc_col_widths[2],
-                    DEFAULT_RELOC_COL_WIDTHS[2],
-                    100.0,
-                    "Target Symbol",
-                    None,
-                    || {},
-                );
-                render_col_header(
-                    ui,
-                    &mut self.reloc_col_widths[3],
-                    DEFAULT_RELOC_COL_WIDTHS[3],
-                    70.0,
-                    "Section",
-                    None,
-                    || {},
-                );
-                render_col_header(
-                    ui,
-                    &mut self.reloc_col_widths[4],
-                    DEFAULT_RELOC_COL_WIDTHS[4],
-                    60.0,
-                    "Addend",
-                    None,
-                    || {},
-                );
-            });
+            render_col_header(
+                ui,
+                &mut self.reloc_col_widths[0],
+                DEFAULT_RELOC_COL_WIDTHS[0],
+                80.0,
+                "Offset",
+                None,
+                || {},
+            );
+            render_col_header(
+                ui,
+                &mut self.reloc_col_widths[1],
+                DEFAULT_RELOC_COL_WIDTHS[1],
+                50.0,
+                "Type",
+                None,
+                || {},
+            );
+            render_col_header(
+                ui,
+                &mut self.reloc_col_widths[2],
+                DEFAULT_RELOC_COL_WIDTHS[2],
+                100.0,
+                "Target Symbol",
+                None,
+                || {},
+            );
+            render_col_header(
+                ui,
+                &mut self.reloc_col_widths[3],
+                DEFAULT_RELOC_COL_WIDTHS[3],
+                70.0,
+                "Section",
+                None,
+                || {},
+            );
+            render_col_header(
+                ui,
+                &mut self.reloc_col_widths[4],
+                DEFAULT_RELOC_COL_WIDTHS[4],
+                60.0,
+                "Addend",
+                None,
+                || {},
+            );
+        });
 
-            ui.separator();
+        ui.separator();
 
-            for r in visible {
+        let num_rows = visible.len();
+        let row_height = 24.0;
+        egui::ScrollArea::both().show_rows(ui, row_height, num_rows, |ui, row_range| {
+            for idx in row_range {
+                let r = visible[idx];
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
 

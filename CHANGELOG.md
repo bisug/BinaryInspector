@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-20
+
+### Added
+
+- Security hardening analysis (`checksec`): RELRO (Full/Partial), Stack Canary, NX Stack, PIE, Fortified Functions, RWX Segments, and Insecure RPATH.
+- Symbol table inspection (`-s` / `--symbols`): static (`.symtab`) and dynamic (`.dynsym`) symbols with type, binding, visibility, and import/export identification.
+- ELF notes inspection (`-n` / `--notes`): GNU Build ID, ABI requirements, and hardware properties (x86 IBT/SHSTK, ARM BTI/PAC).
+- Relocations inspection (`-r` / `--relocations`): SHT_REL / SHT_RELA entries with symbol resolution.
+- Desktop GUI virtual scrolling with `show_rows` and pinned sticky headers across large symbol and relocation tables.
+- GUI interactive search filtering, sortable columns, adjustable column widths, and copy-to-clipboard buttons.
+- GUI resizable split layout with drag-and-drop file target overlay.
+
+### Fixed
+
+- Checksec RELRO detection now correctly recognizes `DT_BIND_NOW` (dynamic tag 24) for Full RELRO.
+- Checksec stack canary detection now recognizes `__stack_chk_fail_local` on PIC and 32-bit x86 binaries.
+- Checksec PIE detection correctly distinguishes static PIE binaries from shared libraries via `DT_DEBUG`.
+- GUI background inspection spinner freezing when mouse is stationary.
+- $O(R \times S)$ relocation resolution performance bottleneck, reducing lookup complexity to $O(1)$.
+- Unbounded note allocation loop capped at `MAX_NOTE_ENTRIES = 8_192`.
+
+### Performance
+
+- Fast static ASCII lookup tables for SHA-256 and byte escaping.
+- Zero-allocation comparisons for symbol type and binding table sorting.
+
 ## [0.1.0] - 2026-09-19
 
 ### Added

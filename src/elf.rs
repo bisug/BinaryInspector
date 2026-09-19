@@ -17,6 +17,7 @@ const MAX_TABLE_ENTRIES: u16 = 65_534;
 const MAX_DYNAMIC_ENTRIES: usize = 16_384;
 const MAX_SYMBOL_ENTRIES: usize = 65_536;
 const MAX_RELOC_ENTRIES: usize = 32_768;
+const MAX_NOTE_ENTRIES: usize = 8_192;
 const MAX_STRING_BYTES: usize = 4_096;
 const MAX_TOTAL_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -105,9 +106,11 @@ fn analyze_mitigations(
     };
 
     // 2. Stack canary
-    let stack_canary = symbols
-        .iter()
-        .any(|s| s.name == "__stack_chk_fail" || s.name == "__stack_chk_guard");
+    let stack_canary = symbols.iter().any(|s| {
+        s.name == "__stack_chk_fail"
+            || s.name == "__stack_chk_fail_local"
+            || s.name == "__stack_chk_guard"
+    });
 
     // 3. NX (No-Execute)
     let gnu_stack = segments.iter().find(|s| s.segment_type == 0x6474_e551); // PT_GNU_STACK
@@ -120,7 +123,7 @@ fn analyze_mitigations(
     let pie = match elf.elf_type {
         ElfType::Executable => PieStatus::NoPie,
         ElfType::Shared => {
-            if dynamic.interpreter.is_some() {
+            if dynamic.interpreter.is_some() || dynamic.entries.iter().any(|e| e.tag == 21) {
                 PieStatus::Pie
             } else {
                 PieStatus::Dso
@@ -132,8 +135,17 @@ fn analyze_mitigations(
     // 5. Fortified functions
     let mut fortified_functions: Vec<String> = symbols
         .iter()
-        .filter(|sym| sym.is_import && sym.name.ends_with("_chk"))
-        .map(|sym| sym.name.clone())
+        .filter(|sym| {
+            if !sym.is_import {
+                return false;
+            }
+            let base_name = sym.name.split('@').next().unwrap_or("");
+            base_name.ends_with("_chk")
+        })
+        .map(|sym| {
+            let base_name = sym.name.split('@').next().unwrap_or(&sym.name);
+            base_name.to_string()
+        })
         .collect();
     fortified_functions.sort_unstable();
     fortified_functions.dedup();
@@ -252,6 +264,7 @@ fn dynamic_info(
                 info.runpath = Some(s.clone());
                 string_val = Some(s);
             }
+            24 => info.bind_now = true,
             30 if value & 8 != 0 => info.bind_now = true,
             0x6fff_fffb if value & 1 != 0 => info.bind_now = true,
             _ => {}
@@ -495,6 +508,9 @@ fn parse_notes(
         };
         let mut cur = 0;
         while cur + 12 <= data.len() {
+            if notes.len() >= MAX_NOTE_ENTRIES {
+                break;
+            }
             let namesz = match read_u32(data, cur, endianness) {
                 Ok(v) => v as usize,
                 Err(_) => break,
@@ -509,20 +525,36 @@ fn parse_notes(
             };
             cur += 12;
 
-            let name_padded = (namesz + 3) & !3;
-            let desc_padded = (descsz + 3) & !3;
+            let name_padded = match namesz.checked_add(3) {
+                Some(v) => v & !3,
+                None => break,
+            };
+            let desc_padded = match descsz.checked_add(3) {
+                Some(v) => v & !3,
+                None => break,
+            };
 
-            if cur + name_padded > data.len() {
-                break;
-            }
-            let name_raw = &data[cur..cur + namesz];
-            cur += name_padded;
+            let name_end = match cur.checked_add(namesz) {
+                Some(end) if end <= data.len() => end,
+                _ => break,
+            };
+            let next_cur = match cur.checked_add(name_padded) {
+                Some(next) if next <= data.len() => next,
+                _ => break,
+            };
+            let name_raw = &data[cur..name_end];
+            cur = next_cur;
 
-            if cur + desc_padded > data.len() {
-                break;
-            }
-            let desc_raw = &data[cur..cur + descsz];
-            cur += desc_padded;
+            let desc_end = match cur.checked_add(descsz) {
+                Some(end) if end <= data.len() => end,
+                _ => break,
+            };
+            let next_cur = match cur.checked_add(desc_padded) {
+                Some(next) if next <= data.len() => next,
+                _ => break,
+            };
+            let desc_raw = &data[cur..desc_end];
+            cur = next_cur;
 
             let clean_name = escape_bytes(if let Some(&0) = name_raw.last() {
                 &name_raw[..name_raw.len() - 1]
@@ -558,10 +590,16 @@ fn parse_notes(
                     }
                     3 => {
                         // NT_GNU_BUILD_ID: SHA-1 or MD5 hash bytes
-                        let mut hex = String::with_capacity(desc_raw.len() * 2);
-                        for &b in desc_raw {
-                            use std::fmt::Write;
-                            let _ = write!(hex, "{b:02x}");
+                        const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+                        let id_bytes = if desc_raw.len() > 64 {
+                            &desc_raw[..64]
+                        } else {
+                            desc_raw
+                        };
+                        let mut hex = String::with_capacity(id_bytes.len() * 2);
+                        for &b in id_bytes {
+                            hex.push(HEX_LOWER[(b >> 4) as usize] as char);
+                            hex.push(HEX_LOWER[(b & 0x0f) as usize] as char);
                         }
                         description = format!("Build ID: {hex}");
                         build_id = Some(hex);
@@ -647,6 +685,17 @@ fn parse_relocations(
 ) -> Result<Vec<Relocation>, AppError> {
     let mut relocations = Vec::new();
 
+    let static_syms: Vec<&str> = symbols
+        .iter()
+        .filter(|s| s.table == SymbolTableKind::Static)
+        .map(|s| s.name.as_str())
+        .collect();
+    let dynamic_syms: Vec<&str> = symbols
+        .iter()
+        .filter(|s| s.table == SymbolTableKind::Dynamic)
+        .map(|s| s.name.as_str())
+        .collect();
+
     for section in sections {
         let is_rela = section.section_type == 4; // SHT_RELA
         let is_rel = section.section_type == 9; // SHT_REL
@@ -664,6 +713,19 @@ fn parse_relocations(
         let Ok(data) = file_slice(bytes, section.offset, section.size, "relocation table") else {
             continue;
         };
+
+        let target_kind = sections
+            .get(section.link as usize)
+            .and_then(|s| match s.section_type {
+                2 => Some(SymbolTableKind::Static),
+                11 => Some(SymbolTableKind::Dynamic),
+                _ => None,
+            });
+
+        let sym_lookup: Option<&[&str]> = target_kind.map(|kind| match kind {
+            SymbolTableKind::Static => static_syms.as_slice(),
+            SymbolTableKind::Dynamic => dynamic_syms.as_slice(),
+        });
 
         let count = (data.len() / entry_size).min(MAX_RELOC_ENTRIES);
         for i in 0..count {
@@ -706,23 +768,10 @@ fn parse_relocations(
                 }
             };
 
-            let target_kind = sections.get(section.link as usize).map(|s| {
-                if s.section_type == 2 {
-                    SymbolTableKind::Static
-                } else {
-                    SymbolTableKind::Dynamic
-                }
-            });
-
-            let symbol_name = target_kind
-                .and_then(|kind| {
-                    symbols
-                        .iter()
-                        .filter(|s| s.table == kind)
-                        .nth(sym_index as usize)
-                        .map(|s| s.name.clone())
-                })
-                .filter(|name| !name.is_empty());
+            let symbol_name = sym_lookup
+                .and_then(|list| list.get(sym_index as usize).copied())
+                .filter(|name| !name.is_empty())
+                .map(String::from);
 
             relocations.push(Relocation {
                 section_name: section.name.clone(),
@@ -1313,5 +1362,81 @@ mod tests {
     #[test]
     fn rejects_an_oversized_string() {
         assert!(string_at(&vec![b'a'; MAX_STRING_BYTES + 1], 0).is_err());
+    }
+
+    #[test]
+    fn test_dt_bind_now_and_stack_chk_fail_local() {
+        use super::analyze_mitigations;
+        use crate::model::{
+            DynamicInfo, ElfHeader, ElfType, OsAbi, Relro, Segment, Symbol, SymbolBinding,
+            SymbolTableKind, SymbolType, SymbolVisibility,
+        };
+
+        let elf = ElfHeader {
+            class: ElfClass::Elf64,
+            endianness: Endianness::Little,
+            elf_type: ElfType::Shared,
+            machine: Machine::X86_64,
+            os_abi: OsAbi::SystemV,
+            abi_version: 0,
+            entry_point: 0x1000,
+            flags: 0,
+            section_offset: 0,
+            section_entry_size: 64,
+            section_count: 0,
+            program_offset: 64,
+            program_entry_size: 56,
+            program_count: 1,
+        };
+
+        let dynamic = DynamicInfo {
+            bind_now: true,
+            ..Default::default()
+        };
+
+        let segments = vec![Segment {
+            index: 0,
+            segment_type: 0x6474_e552, // PT_GNU_RELRO
+            flags: 4,
+            offset: 0,
+            virtual_address: 0,
+            file_size: 0,
+            memory_size: 0,
+            alignment: 8,
+        }];
+
+        let symbols = vec![
+            Symbol {
+                index: 0,
+                name: "__stack_chk_fail_local".to_string(),
+                value: 0,
+                size: 0,
+                sym_type: SymbolType::Func,
+                binding: SymbolBinding::Global,
+                visibility: SymbolVisibility::Default,
+                section_index: None,
+                is_import: true,
+                is_export: false,
+                table: SymbolTableKind::Dynamic,
+            },
+            Symbol {
+                index: 1,
+                name: "__printf_chk@GLIBC_2.3.4".to_string(),
+                value: 0,
+                size: 0,
+                sym_type: SymbolType::Func,
+                binding: SymbolBinding::Global,
+                visibility: SymbolVisibility::Default,
+                section_index: None,
+                is_import: true,
+                is_export: false,
+                table: SymbolTableKind::Dynamic,
+            },
+        ];
+
+        let mit = analyze_mitigations(&elf, &dynamic, &segments, &symbols);
+        assert_eq!(mit.relro, Relro::Full);
+        assert!(mit.stack_canary);
+        assert_eq!(mit.fortified_functions, vec!["__printf_chk".to_string()]);
     }
 }
