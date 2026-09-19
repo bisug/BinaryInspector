@@ -16,7 +16,7 @@
 
 ## Dependencies
 
-The foundation will use `clap` for argument parsing and `serde`/`serde_json` for typed JSON. Their exact current versions, release activity, and APIs will be verified immediately before they are added to `Cargo.toml`; no dependency is added during the documentation increment.
+The foundation uses `clap` 4.6.7 for argument parsing and `serde` 1.0.229 for typed domain models. Both were verified against crates.io and docs.rs on 2026-09-19; their declared MSRVs are below this project's Rust 1.98.1 baseline. `serde_json` will be verified and added only with Phase 6.
 
 ## Exit codes
 
