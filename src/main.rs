@@ -22,7 +22,7 @@ fn main() -> ExitCode {
             };
         }
     };
-    let all_categories = !cli.sections && !cli.segments && !cli.dependencies;
+    let all_categories = cli.all || (!cli.sections && !cli.segments && !cli.dependencies);
     match inspect(&cli.file) {
         Ok(binary) => {
             print!(

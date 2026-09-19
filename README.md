@@ -32,9 +32,11 @@ The executable is `target/release/binary-inspector`.
 
 ```text
 binary-inspector <FILE>
-binary-inspector <FILE> --sections
-binary-inspector <FILE> --segments
-binary-inspector <FILE> --dependencies
+binary-inspector <FILE> -S              # sections
+binary-inspector <FILE> -l              # segments
+binary-inspector <FILE> -d              # dependencies
+binary-inspector <FILE> -Sld            # combine categories
+binary-inspector <FILE> --all           # explicit all categories
 binary-inspector --help
 binary-inspector --version
 ```
@@ -42,7 +44,7 @@ binary-inspector --version
 No category flag prints all currently implemented categories; flags can be combined.
 
 ```sh
-binary-inspector /bin/ls --dependencies
+binary-inspector /bin/ls -d
 ```
 
 ## Exit codes

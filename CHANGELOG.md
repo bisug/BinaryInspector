@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Added short category flags and copy-paste CLI examples.
+
 ### Added
 
 - Phase 1 ELF identification and bounded regular-file input handling.
