@@ -20,8 +20,6 @@ BinaryInspector is a safe, local Rust CLI and native desktop application for ins
 - Cross-platform native desktop GUI (`binary-inspector-gui`) with file dialog, drag-and-drop, and background inspection
 - Bounded reads, checked parser arithmetic, symlink/FIFO traversal protection, and terminal-safe binary strings (`\xNN` escaping)
 
-Symbols, hardening analysis, and JSON output are planned. See the [roadmap](ROADMAP.md).
-
 ## Installation
 
 ### Automated installer (Linux & macOS)
@@ -122,10 +120,6 @@ cargo doc --no-deps
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). GitHub Actions tests Linux, macOS, and Windows; CodeQL scans Rust on pushes, pull requests, and weekly.
-
-## Documentation
-
-[Product requirements](PRD.md) · [Technical requirements](TRD.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## License
 
