@@ -8,9 +8,12 @@
   <a href="https://github.com/bisug/BinaryInspector/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-0b6e4f.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/Rust-1.98.1%2B-b7410e.svg" alt="Rust 1.98.1 or newer">
   <a href="https://github.com/bisug/BinaryInspector/security"><img src="https://img.shields.io/badge/security-policy-5b5bd6.svg" alt="Security policy"></a>
+  <a href="https://github.com/bisug/BinaryInspector/wiki"><img src="https://img.shields.io/badge/docs-wiki-8a63d2.svg" alt="Documentation wiki"></a>
 </p>
 
 BinaryInspector is a safe, local Rust CLI and native desktop application for inspecting ELF binaries. It never executes, loads, or dynamically links its target and performs no runtime network I/O.
+
+**Documentation lives in the [wiki](https://github.com/bisug/BinaryInspector/wiki)** — installation, CLI reference, GUI guide, security checks, JSON schema, safety model, and more.
 
 ## Current capabilities
 
@@ -21,6 +24,8 @@ BinaryInspector is a safe, local Rust CLI and native desktop application for ins
 - Bounded reads, checked parser arithmetic, symlink/FIFO traversal protection, and terminal-safe binary strings (`\xNN` escaping)
 
 ## Installation
+
+> Alternative install methods, desktop-entry registration details, and troubleshooting: [Installation](https://github.com/bisug/BinaryInspector/wiki/Installation).
 
 ### Automated installer (Linux & macOS)
 
@@ -76,7 +81,7 @@ binary-inspector --help
 binary-inspector --version
 ```
 
-No category flag prints all currently implemented categories; flags can be combined.
+No category flag prints all currently implemented categories; flags can be combined. Full flag reference: [Command-Line-Reference](https://github.com/bisug/BinaryInspector/wiki/Command-Line-Reference).
 
 ```sh
 binary-inspector /bin/ls -d
@@ -95,6 +100,8 @@ binary-inspector-gui
 - The binary is parsed asynchronously on a background thread while the UI remains fully responsive.
 - Navigate between **Overview**, **Sections**, **Segments**, and **Dependencies** tabs.
 
+Full walkthrough — tabs, sorting, symbol detail pane, and keyboard shortcuts: [GUI Guide](https://github.com/bisug/BinaryInspector/wiki/GUI-Guide).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -104,9 +111,11 @@ binary-inspector-gui
 | 2 | File-system error, including a non-regular target |
 | 3 | Malformed, truncated, or unsupported ELF input |
 
+Error categories and remediation hints for each failure: [Exit Codes and Errors](https://github.com/bisug/BinaryInspector/wiki/Exit-Codes-and-Errors).
+
 ## Safety
 
-Every binary is untrusted input. BinaryInspector accepts regular, non-symlink files only, rejects oversized input, uses no `unsafe` code, and sanitizes untrusted terminal text. Read the [security policy](SECURITY.md) for the complete model and private vulnerability reporting process.
+Every binary is untrusted input. BinaryInspector accepts regular, non-symlink files only, rejects oversized input, uses no `unsafe` code, and sanitizes untrusted terminal text. The technical safety model is documented in the [wiki](https://github.com/bisug/BinaryInspector/wiki/Safety-Model); report vulnerabilities privately per the [security policy](SECURITY.md).
 
 ## Development
 
@@ -119,7 +128,7 @@ cargo test
 cargo doc --no-deps
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). GitHub Actions tests Linux, macOS, and Windows; CodeQL scans Rust on pushes, pull requests, and weekly.
+See [CONTRIBUTING.md](CONTRIBUTING.md). GitHub Actions tests Linux, macOS, and Windows; CodeQL scans Rust on pushes, pull requests, and weekly. Build matrix, toolchain notes, and fuzzing setup: [Building from Source](https://github.com/bisug/BinaryInspector/wiki/Building-from-Source) · [Fuzzing and Testing](https://github.com/bisug/BinaryInspector/wiki/Fuzzing-and-Testing).
 
 ## License
 
