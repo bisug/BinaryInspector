@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Dynamic table, symbols, notes, and relocations are now also decoded from program headers when section headers are absent (stripped binaries), so interpreter, `DT_NEEDED`, RPATH/RUNPATH, and binding-mode reporting remain correct.
+- PIE detection falls back to `DT_FLAGS_1` `DF_1_PIE` for static PIE binaries.
+- Section-header tables located beyond the end of the file are rejected instead of amplifying parse work.
+- Entropy computation is bounded by a shared 64 MiB scan budget across all sections.
+- Fuzzing workflow now fails the CI job on a crash instead of swallowing errors.
+
+### Removed
+
+- Untracked `samples/` fixture binaries; fixtures must be regenerated from committed sources (per `CONTRIBUTING.md`).
+
 ## [0.2.0] - 2026-09-20
 
 ### Added

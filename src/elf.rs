@@ -1830,4 +1830,91 @@ mod tests {
         assert_eq!(mit.stack_canary, Hardening::Enabled);
         assert_eq!(mit.fortified_functions, vec!["__printf_chk".to_string()]);
     }
+
+    /// Regression: stripped binaries carry no sections; the dynamic table must
+    /// still be decoded from PT_DYNAMIC and PIE must be recognized via DF_1_PIE.
+    #[test]
+    fn parses_dynamic_from_program_headers_without_sections() {
+        use crate::model::{Hardening, PieStatus};
+
+        let mut bytes = vec![0_u8; 0x280];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        // ET_DYN, x86-64, entry, phoff=64, no sections
+        u16_into(&mut bytes, 16, 3);
+        u16_into(&mut bytes, 18, 62);
+        u32_into(&mut bytes, 20, 1);
+        bytes[24..32].copy_from_slice(&0x1000_u64.to_le_bytes()); // entry
+        bytes[32..40].copy_from_slice(&64_u64.to_le_bytes()); // phoff
+                                                              // e_shoff (40..48) stays 0
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes()); // ehsize
+        bytes[54..56].copy_from_slice(&56_u16.to_le_bytes()); // phentsize
+        u16_into(&mut bytes, 56, 3); // phnum: PT_LOAD + PT_DYNAMIC + PT_GNU_STACK
+
+        // PT_LOAD identity-mapping the whole file (vaddr == offset)
+        u32_into(&mut bytes, 64, 1);
+        u32_into(&mut bytes, 68, 5); // PF_R | PF_X
+        bytes[72..80].copy_from_slice(&0_u64.to_le_bytes()); // offset
+        bytes[80..88].copy_from_slice(&0_u64.to_le_bytes()); // vaddr
+        bytes[96..104].copy_from_slice(&0x280_u64.to_le_bytes()); // filesz
+        bytes[104..112].copy_from_slice(&0x280_u64.to_le_bytes()); // memsz
+                                                                   // PT_DYNAMIC at file offset 0x200
+        u32_into(&mut bytes, 120, 2);
+        u32_into(&mut bytes, 124, 6); // PF_R | PF_W
+        bytes[128..136].copy_from_slice(&0x200_u64.to_le_bytes()); // offset
+        bytes[136..144].copy_from_slice(&0x200_u64.to_le_bytes()); // vaddr
+        bytes[152..160].copy_from_slice(&0x50_u64.to_le_bytes()); // filesz
+                                                                  // PT_GNU_STACK, RW (no PF_X) => NX enabled
+        u32_into(&mut bytes, 176, 0x6474_e551);
+        u32_into(&mut bytes, 180, 6);
+        bytes[184..192].copy_from_slice(&0x200_u64.to_le_bytes());
+
+        // Dynamic table: DT_STRTAB, DT_STRSZ, DT_NEEDED, DT_FLAGS_1(DF_1_PIE), DT_NULL
+        u64_into(&mut bytes, 0x200, 5); // DT_STRTAB
+        u64_into(&mut bytes, 0x208, 0x250);
+        u64_into(&mut bytes, 0x210, 10); // DT_STRSZ
+        u64_into(&mut bytes, 0x218, 0x10);
+        u64_into(&mut bytes, 0x220, 1); // DT_NEEDED
+        u64_into(&mut bytes, 0x228, 0);
+        u64_into(&mut bytes, 0x230, 0x6fff_fffb); // DT_FLAGS_1
+        u64_into(&mut bytes, 0x238, 0x0800_0000); // DF_1_PIE
+        u64_into(&mut bytes, 0x240, 0); // DT_NULL
+        bytes[0x250..0x25c].copy_from_slice(b"libfoo.so.1\0");
+
+        let binary = parse(&bytes, bytes.len() as u64).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(binary.dynamic.needed, vec!["libfoo.so.1".to_string()]);
+        assert_eq!(binary.mitigations.pie, PieStatus::Pie);
+        assert_eq!(binary.mitigations.nx, Hardening::Enabled);
+    }
+
+    /// Regression: a section header table beyond the file must be rejected
+    /// instead of amplifying into unbounded work.
+    #[test]
+    fn rejects_a_section_table_beyond_the_file() {
+        let mut bytes = vec![0_u8; 64];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        u16_into(&mut bytes, 16, 2);
+        u16_into(&mut bytes, 18, 62);
+        u32_into(&mut bytes, 20, 1);
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[58..60].copy_from_slice(&64_u16.to_le_bytes());
+        u16_into(&mut bytes, 60, 65_535); // e_shnum at the cap
+        u16_into(&mut bytes, 62, 1);
+        bytes[40..48].copy_from_slice(&0x100_0000_u64.to_le_bytes()); // shoff way out of file
+
+        assert!(parse(&bytes, 64).is_err());
+    }
+
+    fn u16_into(bytes: &mut [u8], at: usize, value: u16) {
+        bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn u32_into(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn u64_into(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
 }

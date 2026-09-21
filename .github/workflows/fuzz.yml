@@ -17,10 +17,7 @@ jobs:
         with:
           toolchain: nightly
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked || true
+        run: cargo install cargo-fuzz --locked
       - name: Fuzz ELF parser
-        run: |
-          if command -v cargo-fuzz >/dev/null 2>&1; then
-            cargo fuzz run parse_elf -- -max_total_time=60 || true
-          fi
+        run: cargo fuzz run parse_elf -- -max_total_time=60
 
