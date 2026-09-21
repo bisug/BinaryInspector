@@ -23,6 +23,24 @@ pub struct ReportOptions {
     pub relocations: bool,
 }
 
+/// Versioned JSON report envelope (schema version 1).
+#[derive(Debug, serde::Serialize)]
+struct JsonReport<'a> {
+    /// Schema version of this document.
+    schema_version: u32,
+    /// The full inspection result. Flattened so its fields appear at the top level.
+    #[serde(flatten)]
+    binary: &'a Binary,
+}
+
+/// Serializes the full inspection result as pretty-printed JSON (schema version 1).
+pub fn report_json(binary: &Binary) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&JsonReport {
+        schema_version: 1,
+        binary,
+    })
+}
+
 /// Formats the legacy human-readable report for backwards compatibility.
 pub fn human(binary: &Binary, sections: bool, segments: bool, dependencies: bool) -> String {
     report_human(

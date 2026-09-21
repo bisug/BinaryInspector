@@ -47,7 +47,17 @@ fn main() -> ExitCode {
                 notes: all || cli.notes,
                 relocations: all || cli.relocations,
             };
-            print!("{}", report::report_human(&binary, options));
+            if cli.json {
+                match report::report_json(&binary) {
+                    Ok(json) => println!("{json}"),
+                    Err(error) => {
+                        eprintln!("binary-inspector: JSON serialization failed: {error}");
+                        return ExitCode::from(3);
+                    }
+                }
+            } else {
+                print!("{}", report::report_human(&binary, options));
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {

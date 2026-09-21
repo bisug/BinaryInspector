@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `--json` flag (Phase 8): pretty-printed, schema-versioned JSON report (`schema_version: 1`) covering every category, plus CLI integration test.
+
 ### Fixed
 
 - Dynamic table, symbols, notes, and relocations are now also decoded from program headers when section headers are absent (stripped binaries), so interpreter, `DT_NEEDED`, RPATH/RUNPATH, and binding-mode reporting remain correct.

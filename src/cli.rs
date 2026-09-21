@@ -8,7 +8,7 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(
     version,
-    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n\nExit codes: 0 success; 1 usage; 2 I/O; 3 parse error."
+    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n  binary-inspector /bin/ls --json\n\nExit codes: 0 success; 1 usage; 2 I/O; 3 parse error."
 )]
 pub struct Cli {
     /// ELF file to inspect.
@@ -37,6 +37,9 @@ pub struct Cli {
     /// Include every available category (the default).
     #[arg(short, long)]
     pub all: bool,
+    /// Emit versioned JSON (schema 1) to stdout instead of human text.
+    #[arg(long)]
+    pub json: bool,
     /// Disable color (human output is currently uncolored).
     #[arg(long)]
     pub no_color: bool,

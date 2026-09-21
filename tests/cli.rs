@@ -88,3 +88,21 @@ fn valid_minimal_elf_exits_with_code_0() {
     assert_eq!(output.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&output.stdout).contains("ELF64"));
 }
+
+#[test]
+fn json_output_is_versioned_and_complete() {
+    let output = Command::new(env!("CARGO_BIN_EXE_binary-inspector"))
+        .arg("/bin/ls")
+        .arg("--json")
+        .output()
+        .unwrap_or_else(|error| panic!("could not run CLI: {error}"));
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with('{'));
+    assert!(stdout.trim_end().ends_with('}'));
+    assert!(stdout.contains("\"schema_version\": 1"));
+    assert!(stdout.contains("\"sha256\""));
+    assert!(stdout.contains("\"symbols\""));
+    assert!(stdout.contains("\"mitigations\""));
+}
