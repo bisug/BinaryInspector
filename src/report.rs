@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use crate::model::{Binary, SecurityMitigations};
+use crate::model::{Binary, Hardening, SecurityMitigations};
 
 /// Options selecting which categories to display in human-readable output.
 #[derive(Debug, Clone, Copy, Default)]
@@ -63,7 +63,7 @@ pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
         for section in &binary.sections {
             let _ = writeln!(
                 output,
-                "  [{:>2}] {:<22} type={:<10} flags={:<4} addr={:#010x} offset={:#08x} size={:<8} entropy={:.2}",
+                "  [{:>2}] {:<22} type={:<10} flags={:<4} addr={:#010x} offset={:#08x} size={:<8} entropy={}",
                 section.index,
                 section.name,
                 format!("{:#x}", section.section_type),
@@ -71,7 +71,9 @@ pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
                 section.address,
                 section.offset,
                 section.size,
-                section.entropy
+                section
+                    .entropy
+                    .map_or_else(|| "-".to_string(), |entropy| format!("{entropy:.2}"))
             );
         }
     }
@@ -194,29 +196,29 @@ fn format_mitigations(output: &mut String, mit: &SecurityMitigations) {
     let _ = writeln!(
         output,
         "  Stack Canary:   {}",
-        if mit.stack_canary {
-            "Yes"
-        } else {
-            "No (vulnerable)"
+        match mit.stack_canary {
+            Hardening::Enabled => "Yes",
+            Hardening::Disabled => "No (vulnerable)",
+            Hardening::Unknown => "Unknown (no symbol table)",
         }
     );
     let _ = writeln!(
         output,
         "  NX Stack:       {}",
-        if mit.nx {
-            "Yes (non-executable)"
-        } else {
-            "No (executable stack)"
+        match mit.nx {
+            Hardening::Enabled => "Yes (non-executable)",
+            Hardening::Disabled => "No (executable stack)",
+            Hardening::Unknown => "Unknown (no PT_GNU_STACK)",
         }
     );
     let _ = writeln!(output, "  PIE:            {}", mit.pie);
     let _ = writeln!(
         output,
         "  Fortify Source: {}",
-        if mit.fortified_functions.is_empty() {
-            "No".to_string()
-        } else {
-            format!("Yes ({} functions)", mit.fortified_functions.len())
+        match mit.fortify {
+            Hardening::Enabled => format!("Yes ({} functions)", mit.fortified_functions.len()),
+            Hardening::Disabled => "No".to_string(),
+            Hardening::Unknown => "Unknown (no symbol table)".to_string(),
         }
     );
     let _ = writeln!(

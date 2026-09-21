@@ -5,9 +5,9 @@ use crate::{
     hash::{calculate_entropy, sha256_hex},
     model::{
         Binary, DynamicEntry, DynamicInfo, ElfClass, ElfHeader, ElfNote, ElfType, Endianness,
-        FileFormat, FileHashes, FileMetadata, Machine, OsAbi, PieStatus, Relocation, Relro,
-        Section, SecurityMitigations, Segment, Symbol, SymbolBinding, SymbolTableKind, SymbolType,
-        SymbolVisibility,
+        FileFormat, FileHashes, FileMetadata, Hardening, Machine, OsAbi, PieStatus, Relocation,
+        Relro, Section, SecurityMitigations, Segment, Symbol, SymbolBinding, SymbolTableKind,
+        SymbolType, SymbolVisibility,
     },
     text::escape_bytes,
 };
@@ -20,6 +20,20 @@ const MAX_RELOC_ENTRIES: usize = 32_768;
 const MAX_NOTE_ENTRIES: usize = 8_192;
 const MAX_STRING_BYTES: usize = 4_096;
 const MAX_TOTAL_TEXT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Ceiling on the section bytes scanned for entropy during one inspection.
+///
+/// Section sizes are attacker-controlled and independent of the file size, so
+/// without a shared budget a small file can declare thousands of sections that
+/// all claim the whole file and turn bounded input into unbounded work.
+const MAX_TOTAL_SECTION_SCAN_BYTES: usize = 64 * 1024 * 1024;
+
+/// `DT_FLAGS` immediate-binding bit (`DF_BIND_NOW`).
+const DF_BIND_NOW: u64 = 0x8;
+/// `DT_FLAGS_1` immediate-binding bit (`DF_1_NOW`).
+const DF_1_NOW: u64 = 0x1;
+/// `DT_FLAGS_1` bit marking an `ET_DYN` file as a position-independent executable.
+const DF_1_PIE: u64 = 0x0800_0000;
 
 /// Parses comprehensive ELF metadata from an owned byte buffer.
 pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
@@ -49,7 +63,7 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     let sections = parse_sections(bytes, &class, &endianness, &layout)?;
     let segments = parse_segments(bytes, &class, &endianness, &layout)?;
     let dynamic = dynamic_info(bytes, &class, &endianness, &sections, &segments)?;
-    let symbols = parse_symbols(bytes, &class, &endianness, &sections)?;
+    let symbols = parse_symbols(bytes, &class, &endianness, &sections, &segments)?;
     let notes = parse_notes(bytes, &class, &endianness, &sections, &segments)?;
     let relocations = parse_relocations(bytes, &class, &endianness, &sections, &symbols)?;
 
@@ -98,7 +112,10 @@ fn analyze_mitigations(
 ) -> SecurityMitigations {
     // 1. RELRO
     let has_relro = segments.iter().any(|s| s.segment_type == 0x6474_e552); // PT_GNU_RELRO
-    let relro = if has_relro {
+    let relro = if segments.is_empty() {
+        // Nothing is known about the load-time layout without program headers.
+        Relro::Unknown
+    } else if has_relro {
         if dynamic.bind_now {
             Relro::Full
         } else {
@@ -109,30 +126,56 @@ fn analyze_mitigations(
     };
 
     // 2. Stack canary
-    let stack_canary = symbols.iter().any(|s| {
+    let stack_canary = if symbols.is_empty() {
+        // Canary detection is symbol-based: without any symbol table the result
+        // would be a claim about the file rather than a finding.
+        Hardening::Unknown
+    } else if symbols.iter().any(|s| {
         s.name == "__stack_chk_fail"
             || s.name == "__stack_chk_fail_local"
             || s.name == "__stack_chk_guard"
-    });
+    }) {
+        Hardening::Enabled
+    } else {
+        Hardening::Disabled
+    };
 
     // 3. NX (No-Execute)
     let gnu_stack = segments.iter().find(|s| s.segment_type == 0x6474_e551); // PT_GNU_STACK
     let nx = match gnu_stack {
-        Some(seg) => (seg.flags & 1) == 0, // PF_X (1) not set => stack non-executable
-        None => false,
+        // PF_X (1) not set => stack non-executable
+        Some(seg) => {
+            if seg.flags & 1 == 0 {
+                Hardening::Enabled
+            } else {
+                Hardening::Disabled
+            }
+        }
+        // An absent PT_GNU_STACK leaves the stack permissions to the kernel
+        // default; readelf-based checksec tooling treats it as non-executable.
+        None => Hardening::Unknown,
     };
 
     // 4. PIE
     let pie = match elf.elf_type {
         ElfType::Executable => PieStatus::NoPie,
         ElfType::Shared => {
-            if dynamic.interpreter.is_some() || dynamic.entries.iter().any(|e| e.tag == 21) {
+            // A static PIE is ET_DYN without an interpreter and without DT_DEBUG,
+            // and is only distinguishable through the DF_1_PIE flag.
+            let flags1_pie = dynamic
+                .entries
+                .iter()
+                .any(|entry| entry.tag == 0x6fff_fffb && entry.value & DF_1_PIE != 0);
+            if dynamic.interpreter.is_some()
+                || dynamic.entries.iter().any(|e| e.tag == 21)
+                || flags1_pie
+            {
                 PieStatus::Pie
             } else {
                 PieStatus::Dso
             }
         }
-        _ => PieStatus::NoPie,
+        _ => PieStatus::Unknown,
     };
 
     // 5. Fortified functions
@@ -152,6 +195,13 @@ fn analyze_mitigations(
         .collect();
     fortified_functions.sort_unstable();
     fortified_functions.dedup();
+    let fortify = if symbols.is_empty() {
+        Hardening::Unknown
+    } else if fortified_functions.is_empty() {
+        Hardening::Disabled
+    } else {
+        Hardening::Enabled
+    };
 
     // 6. RWX Segments (Write + Execute permission violation)
     let rwx_segments = segments
@@ -174,6 +224,7 @@ fn analyze_mitigations(
         stack_canary,
         nx,
         pie,
+        fortify,
         fortified_functions,
         rwx_segments,
         has_insecure_rpath,
@@ -197,81 +248,53 @@ fn dynamic_info(
         )?;
         info.interpreter = Some(c_string(value, "interpreter")?);
     }
-    let Some(dynamic) = sections.iter().find(|section| section.section_type == 6) else {
+    let Some((entries, table)) = dynamic_entries(bytes, class, endianness, sections, segments)?
+    else {
         return Ok(info);
     };
-    let strings = sections
-        .get(
-            usize::try_from(dynamic.link)
-                .map_err(|_| malformed("dynamic string-table index is too large"))?,
-        )
-        .ok_or_else(|| malformed("dynamic string-table index is outside the section table"))?;
-    if strings.section_type != 3 {
-        return Err(malformed(
-            "dynamic string-table link does not reference a string table",
-        ));
-    }
-    let data = file_slice(bytes, dynamic.offset, dynamic.size, "dynamic section")?;
-    let width = match class {
-        ElfClass::Elf32 => 8,
-        ElfClass::Elf64 => 16,
-    };
-    if data.len() % width != 0 {
-        return Err(malformed("dynamic section has an invalid entry size"));
-    }
-    if data.len() / width > MAX_DYNAMIC_ENTRIES {
-        return Err(ParseError::LimitExceeded {
-            what: "dynamic table entries",
-            limit: MAX_DYNAMIC_ENTRIES,
-        }
-        .into());
-    }
-    let table = file_slice(bytes, strings.offset, strings.size, "dynamic string table")?;
     let mut text_bytes = 0;
-    for offset in (0..data.len()).step_by(width) {
-        let tag = match class {
-            ElfClass::Elf32 => u64::from(read_u32(data, offset, endianness)?),
-            ElfClass::Elf64 => read_u64(data, offset, endianness)?,
-        };
-        let value = match class {
-            ElfClass::Elf32 => u64::from(read_u32(data, offset + 4, endianness)?),
-            ElfClass::Elf64 => read_u64(data, offset + 8, endianness)?,
-        };
-        if tag == 0 {
-            break;
-        }
-        let text = || {
-            string_at(
+    for (tag, value) in entries {
+        let text = || match table {
+            Some(table) => string_at(
                 table,
                 u32::try_from(value)
                     .map_err(|_| malformed("dynamic string offset is too large"))?,
             )
+            .map(Some),
+            None => Ok(None),
         };
         let mut string_val = None;
         match tag {
             1 => {
-                let s = take_text(text()?, &mut text_bytes)?;
-                info.needed.push(s.clone());
-                string_val = Some(s);
+                if let Some(text) = text()? {
+                    let s = take_text(text, &mut text_bytes)?;
+                    info.needed.push(s.clone());
+                    string_val = Some(s);
+                }
             }
             14 => {
                 // DT_SONAME
-                let s = take_text(text()?, &mut text_bytes)?;
-                string_val = Some(s);
+                if let Some(text) = text()? {
+                    string_val = Some(take_text(text, &mut text_bytes)?);
+                }
             }
             15 => {
-                let s = take_text(text()?, &mut text_bytes)?;
-                info.rpath = Some(s.clone());
-                string_val = Some(s);
+                if let Some(text) = text()? {
+                    let s = take_text(text, &mut text_bytes)?;
+                    info.rpath = Some(s.clone());
+                    string_val = Some(s);
+                }
             }
             29 => {
-                let s = take_text(text()?, &mut text_bytes)?;
-                info.runpath = Some(s.clone());
-                string_val = Some(s);
+                if let Some(text) = text()? {
+                    let s = take_text(text, &mut text_bytes)?;
+                    info.runpath = Some(s.clone());
+                    string_val = Some(s);
+                }
             }
             24 => info.bind_now = true,
-            30 if value & 8 != 0 => info.bind_now = true,
-            0x6fff_fffb if value & 1 != 0 => info.bind_now = true,
+            30 if value & DF_BIND_NOW != 0 => info.bind_now = true,
+            0x6fff_fffb if value & DF_1_NOW != 0 => info.bind_now = true,
             _ => {}
         }
         info.entries.push(DynamicEntry {
@@ -282,6 +305,128 @@ fn dynamic_info(
         });
     }
     Ok(info)
+}
+
+/// A raw `(tag, value)` dynamic table paired with its string table, when present.
+type RawDynamicTable<'a> = (Vec<(u64, u64)>, Option<&'a [u8]>);
+
+/// Reads the dynamic table together with its string table.
+///
+/// Section headers are authoritative when the file has them, but stripping and
+/// packing tools routinely remove them while `PT_DYNAMIC` stays, so the segment
+/// is used as the fallback to keep dependencies and binding mode available.
+fn dynamic_entries<'a>(
+    bytes: &'a [u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    sections: &[Section],
+    segments: &[Segment],
+) -> Result<Option<RawDynamicTable<'a>>, AppError> {
+    if let Some(dynamic) = sections.iter().find(|section| section.section_type == 6) {
+        let strings = sections
+            .get(
+                usize::try_from(dynamic.link)
+                    .map_err(|_| malformed("dynamic string-table index is too large"))?,
+            )
+            .ok_or_else(|| malformed("dynamic string-table index is outside the section table"))?;
+        if strings.section_type != 3 {
+            return Err(malformed(
+                "dynamic string-table link does not reference a string table",
+            ));
+        }
+        let table = file_slice(bytes, strings.offset, strings.size, "dynamic string table")?;
+        let entries = read_dynamic_entries(
+            bytes,
+            class,
+            endianness,
+            dynamic.offset,
+            dynamic.size,
+            "dynamic section",
+        )?;
+        return Ok(Some((entries, Some(table))));
+    }
+
+    let Some(segment) = segments.iter().find(|segment| segment.segment_type == 2) else {
+        return Ok(None);
+    };
+    let entries = read_dynamic_entries(
+        bytes,
+        class,
+        endianness,
+        segment.offset,
+        segment.file_size,
+        "dynamic segment",
+    )?;
+    let address_of = |tag: u64| {
+        entries
+            .iter()
+            .find(|(entry_tag, _)| *entry_tag == tag)
+            .map(|(_, value)| *value)
+    };
+    let table = match (address_of(5), address_of(10)) {
+        // DT_STRTAB / DT_STRSZ
+        (Some(address), Some(size)) if size > 0 => vaddr_to_offset(segments, address)
+            .map(|offset| file_slice(bytes, offset, size, "dynamic string table"))
+            .transpose()?,
+        _ => None,
+    };
+    Ok(Some((entries, table)))
+}
+
+/// Reads raw `(tag, value)` pairs up to the `DT_NULL` terminator.
+fn read_dynamic_entries(
+    bytes: &[u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    offset: u64,
+    size: u64,
+    what: &'static str,
+) -> Result<Vec<(u64, u64)>, AppError> {
+    let width = match class {
+        ElfClass::Elf32 => 8,
+        ElfClass::Elf64 => 16,
+    };
+    let data = file_slice(bytes, offset, size, what)?;
+    if data.len() % width != 0 {
+        return Err(malformed("dynamic table has an invalid entry size"));
+    }
+    let count = data.len() / width;
+    if count > MAX_DYNAMIC_ENTRIES {
+        return Err(ParseError::LimitExceeded {
+            what: "dynamic table entries",
+            limit: MAX_DYNAMIC_ENTRIES,
+        }
+        .into());
+    }
+    let mut entries = Vec::with_capacity(count);
+    for index in 0..count {
+        let at = index * width;
+        let tag = match class {
+            ElfClass::Elf32 => u64::from(read_u32(data, at, endianness)?),
+            ElfClass::Elf64 => read_u64(data, at, endianness)?,
+        };
+        let value = match class {
+            ElfClass::Elf32 => u64::from(read_u32(data, at + 4, endianness)?),
+            ElfClass::Elf64 => read_u64(data, at + 8, endianness)?,
+        };
+        if tag == 0 {
+            break;
+        }
+        entries.push((tag, value));
+    }
+    Ok(entries)
+}
+
+/// Maps a virtual address into the file through the loadable segments.
+fn vaddr_to_offset(segments: &[Segment], address: u64) -> Option<u64> {
+    segments
+        .iter()
+        .filter(|segment| segment.segment_type == 1) // PT_LOAD
+        .find(|segment| {
+            address >= segment.virtual_address
+                && address - segment.virtual_address < segment.file_size
+        })
+        .map(|segment| segment.offset + (address - segment.virtual_address))
 }
 
 fn dynamic_tag_name(tag: u64) -> &'static str {
@@ -332,11 +477,24 @@ fn parse_symbols(
     class: &ElfClass,
     endianness: &Endianness,
     sections: &[Section],
+    segments: &[Segment],
 ) -> Result<Vec<Symbol>, AppError> {
     let mut symbols = Vec::new();
     let mut text_bytes = 0;
 
-    for section in sections {
+    // Section headers are the primary source, but they can be missing while the
+    // loader still uses PT_DYNAMIC. Synthesising descriptors for a segment-sourced
+    // dynamic table keeps the loop below the single implementation of decoding.
+    let mut tables = sections.to_vec();
+    if !sections.iter().any(|section| section.section_type == 11) {
+        if let Some((symtab, strings)) = dynamic_symbol_table(bytes, class, endianness, segments)? {
+            let link = tables.len() as u32; // bounded by MAX_TABLE_ENTRIES
+            tables.push(strings);
+            tables.push(Section { link, ..symtab });
+        }
+    }
+
+    for section in &tables {
         if section.section_type != 2 && section.section_type != 11 {
             continue; // Only SHT_SYMTAB (2) and SHT_DYNSYM (11)
         }
@@ -346,7 +504,7 @@ fn parse_symbols(
             SymbolTableKind::Dynamic
         };
 
-        let string_table_bytes = if let Some(str_sec) = sections.get(section.link as usize) {
+        let string_table_bytes = if let Some(str_sec) = tables.get(section.link as usize) {
             if str_sec.section_type == 3 {
                 Some(file_slice(
                     bytes,
@@ -478,6 +636,188 @@ fn parse_symbols(
     }
 
     Ok(symbols)
+}
+
+/// Locates the dynamic symbol table and its string table through `PT_DYNAMIC`.
+///
+/// Returns synthetic section descriptors so the caller can reuse the normal
+/// section-driven decoding path for sectionless binaries.
+fn dynamic_symbol_table(
+    bytes: &[u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    segments: &[Segment],
+) -> Result<Option<(Section, Section)>, AppError> {
+    let Some(segment) = segments.iter().find(|segment| segment.segment_type == 2) else {
+        return Ok(None);
+    };
+    let entries = read_dynamic_entries(
+        bytes,
+        class,
+        endianness,
+        segment.offset,
+        segment.file_size,
+        "dynamic segment",
+    )?;
+    let address_of = |tag: u64| {
+        entries
+            .iter()
+            .find(|(entry_tag, _)| *entry_tag == tag)
+            .map(|(_, value)| *value)
+    };
+    // DT_SYMTAB / DT_STRTAB / DT_STRSZ
+    let (Some(symtab_address), Some(strtab_address), Some(strtab_size)) =
+        (address_of(6), address_of(5), address_of(10))
+    else {
+        return Ok(None);
+    };
+    if strtab_size == 0 {
+        return Ok(None);
+    }
+    let (Some(symtab_offset), Some(strtab_offset)) = (
+        vaddr_to_offset(segments, symtab_address),
+        vaddr_to_offset(segments, strtab_address),
+    ) else {
+        return Ok(None);
+    };
+    let entry_size = symbol_entry_size(class);
+    let Some(count) = dynamic_symbol_count(
+        bytes,
+        class,
+        endianness,
+        &entries,
+        segments,
+        symtab_offset,
+        strtab_offset,
+    ) else {
+        return Ok(None);
+    };
+    let Some(symtab_size) = u64::try_from(count)
+        .ok()
+        .and_then(|count| count.checked_mul(entry_size as u64))
+    else {
+        return Ok(None);
+    };
+    if count == 0 {
+        return Ok(None);
+    }
+    // Reject tables that do not actually fit in the file before use.
+    file_slice(bytes, symtab_offset, symtab_size, "dynamic symbol table")?;
+    file_slice(bytes, strtab_offset, strtab_size, "dynamic string table")?;
+
+    let describe = |section_type: u32, offset: u64, size: u64| Section {
+        index: 0,
+        name: String::new(),
+        section_type,
+        flags: 0,
+        address: 0,
+        offset,
+        size,
+        link: 0,
+        info: 0,
+        alignment: entry_size as u64,
+        entry_size: 0,
+        entropy: None,
+    };
+    Ok(Some((
+        describe(11, symtab_offset, symtab_size), // SHT_DYNSYM
+        describe(3, strtab_offset, strtab_size),  // SHT_STRTAB
+    )))
+}
+
+/// Determines the dynamic symbol count from the hash tables the loader uses.
+fn dynamic_symbol_count(
+    bytes: &[u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    entries: &[(u64, u64)],
+    segments: &[Segment],
+    symtab_offset: u64,
+    strtab_offset: u64,
+) -> Option<usize> {
+    let address_of = |tag: u64| {
+        entries
+            .iter()
+            .find(|(entry_tag, _)| *entry_tag == tag)
+            .map(|(_, value)| *value)
+    };
+
+    // DT_HASH: second word of the SysV hash table is the symbol count (nchain).
+    if let Some(address) = address_of(4) {
+        if let Some(offset) = vaddr_to_offset(segments, address) {
+            if let Ok(offset) = usize::try_from(offset) {
+                if let Some(table) = bytes.get(offset..) {
+                    if let Ok(nchain) = read_u32(table, 4, endianness) {
+                        return Some(nchain as usize);
+                    }
+                }
+            }
+        }
+    }
+
+    // DT_GNU_HASH: symbol numbers end at the last chain entry.
+    if let Some(address) = address_of(0x6fff_fef5) {
+        if let Some(count) = gnu_hash_symbol_count(bytes, class, endianness, address, segments) {
+            return Some(count);
+        }
+    }
+
+    // Last resort: dynamic symbols sit immediately before the string table, which
+    // is the layout every mainstream toolchain emits.
+    if strtab_offset > symtab_offset {
+        return Some(((strtab_offset - symtab_offset) / symbol_entry_size(class) as u64) as usize);
+    }
+    None
+}
+
+/// Counts dynamic symbols through a GNU hash table (`DT_GNU_HASH`).
+fn gnu_hash_symbol_count(
+    bytes: &[u8],
+    class: &ElfClass,
+    endianness: &Endianness,
+    address: u64,
+    segments: &[Segment],
+) -> Option<usize> {
+    let offset = usize::try_from(vaddr_to_offset(segments, address)?).ok()?;
+    let table = bytes.get(offset..)?;
+    let bucket_count = read_u32(table, 0, endianness).ok()? as usize;
+    let symbol_offset = read_u32(table, 4, endianness).ok()? as usize;
+    let bloom_size = read_u32(table, 8, endianness).ok()? as usize;
+    let bloom_bytes = bloom_size.checked_mul(match class {
+        ElfClass::Elf32 => 4,
+        ElfClass::Elf64 => 8,
+    })?;
+    let buckets_at = 16_usize.checked_add(bloom_bytes)?;
+    let buckets_end = buckets_at.checked_add(bucket_count.checked_mul(4)?)?;
+    let buckets = table.get(buckets_at..buckets_end)?;
+    let chains = table.get(buckets_end..)?;
+
+    let mut last = 0;
+    for index in 0..bucket_count {
+        // A bucket holds the first symbol number in its chain.
+        let mut symbol = read_u32(buckets, index * 4, endianness).ok()? as usize;
+        if symbol == 0 {
+            continue;
+        }
+        let mut chain_index = symbol.checked_sub(symbol_offset)?;
+        loop {
+            let chain = read_u32(chains, chain_index.checked_mul(4)?, endianness).ok()?;
+            if chain & 1 != 0 {
+                break; // Lowest bit marks the last symbol of the chain.
+            }
+            symbol += 1;
+            chain_index += 1;
+        }
+        last = last.max(symbol);
+    }
+    Some(last + 1)
+}
+
+fn symbol_entry_size(class: &ElfClass) -> usize {
+    match class {
+        ElfClass::Elf32 => 16,
+        ElfClass::Elf64 => 24,
+    }
 }
 
 fn parse_notes(
@@ -924,13 +1264,26 @@ fn parse_sections(
     }
     let string_table = file_slice(bytes, names.offset, names.size, "section-name string table")?;
     let mut text_bytes = 0;
+    let mut scanned_bytes = 0_usize;
     let mut sections = Vec::with_capacity(raw.len());
     for (index, section) in raw.into_iter().enumerate() {
-        let entropy = if section.section_type != 8 && section.size > 0 {
-            let data = file_slice(bytes, section.offset, section.size, "section contents")?;
-            calculate_entropy(data)
+        // Section sizes are attacker-controlled and independent of the file size:
+        // a small file can declare thousands of sections that each claim the whole
+        // file. Scanning is therefore charged against a shared budget, and sections
+        // beyond it report `entropy: None` rather than stalling the inspection.
+        let entropy = if section.section_type == 8 || section.size == 0 {
+            None
         } else {
-            0.0
+            let data = file_slice(bytes, section.offset, section.size, "section contents")?;
+            if scanned_bytes
+                .checked_add(data.len())
+                .is_some_and(|total| total <= MAX_TOTAL_SECTION_SCAN_BYTES)
+            {
+                scanned_bytes += data.len();
+                Some(calculate_entropy(data))
+            } else {
+                None
+            }
         };
 
         sections.push(Section {
@@ -1406,8 +1759,8 @@ mod tests {
     fn test_dt_bind_now_and_stack_chk_fail_local() {
         use super::analyze_mitigations;
         use crate::model::{
-            DynamicInfo, ElfHeader, ElfType, OsAbi, Relro, Segment, Symbol, SymbolBinding,
-            SymbolTableKind, SymbolType, SymbolVisibility,
+            DynamicInfo, ElfHeader, ElfType, Hardening, OsAbi, Relro, Segment, Symbol,
+            SymbolBinding, SymbolTableKind, SymbolType, SymbolVisibility,
         };
 
         let elf = ElfHeader {
@@ -1474,7 +1827,7 @@ mod tests {
 
         let mit = analyze_mitigations(&elf, &dynamic, &segments, &symbols);
         assert_eq!(mit.relro, Relro::Full);
-        assert!(mit.stack_canary);
+        assert_eq!(mit.stack_canary, Hardening::Enabled);
         assert_eq!(mit.fortified_functions, vec!["__printf_chk".to_string()]);
     }
 }

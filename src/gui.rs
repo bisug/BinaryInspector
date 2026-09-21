@@ -12,8 +12,8 @@ use binary_inspector::{
     error::AppError,
     inspect,
     model::{
-        Binary, ElfNote, PieStatus, Relocation, Relro, Section, SecurityMitigations, Segment,
-        Symbol, SymbolBinding, SymbolType,
+        Binary, ElfNote, Hardening, PieStatus, Relocation, Relro, Section, SecurityMitigations,
+        Segment, Symbol, SymbolBinding, SymbolType,
     },
 };
 use eframe::egui;
@@ -177,10 +177,9 @@ struct InspectorApp {
 
 impl InspectorApp {
     fn inspect(&mut self, path: PathBuf) {
-        if matches!(&self.inspection, Inspection::Loading(_)) {
-            return;
-        }
-
+        // An in-flight inspection is abandoned rather than blocked: replacing the
+        // state drops the old receiver, so the (bounded) worker result is discarded
+        // and a new file can be opened immediately.
         if !self.recent_files.contains(&path) {
             self.recent_files.insert(0, path.clone());
             if self.recent_files.len() > 6 {
@@ -289,6 +288,7 @@ impl InspectorApp {
     fn render_main_ui(&mut self, ui: &mut egui::Ui, is_hovering: bool) {
         let mut choose_file = false;
         let mut unload_file = false;
+        let mut cancel_load = false;
 
         // Top Control Bar
         ui.horizontal(|ui| {
@@ -376,6 +376,10 @@ impl InspectorApp {
                                     .color(ui.visuals().weak_text_color()),
                             );
                             ui.small("Parsing ELF headers, symbols, notes, and security metadata");
+                            ui.add_space(12.0);
+                            if ui.button("Cancel").clicked() {
+                                cancel_load = true;
+                            }
                         });
                     });
                 }
@@ -391,6 +395,11 @@ impl InspectorApp {
                 }
             },
         );
+
+        if cancel_load {
+            self.inspection = Inspection::Empty;
+            self.view_state.set_status("Inspection cancelled");
+        }
 
         // Bottom Status Bar
         ui.separator();
@@ -418,14 +427,7 @@ impl InspectorApp {
                     ui.separator();
                     ui.label(format!("RELRO: {}", binary.mitigations.relro));
                     ui.separator();
-                    ui.label(format!(
-                        "NX: {}",
-                        if binary.mitigations.nx {
-                            "Enabled"
-                        } else {
-                            "Disabled"
-                        }
-                    ));
+                    ui.label(format!("NX: {}", binary.mitigations.nx));
                 }
                 _ => {
                     ui.label(egui::RichText::new("Ready").color(ui.visuals().weak_text_color()));
@@ -824,25 +826,40 @@ impl ViewState {
                                 ("Partial RELRO", egui::Color32::from_rgb(220, 160, 40))
                             }
                             Relro::None => ("No RELRO", egui::Color32::from_rgb(220, 70, 70)),
+                            Relro::Unknown => {
+                                ("RELRO Unknown", egui::Color32::from_rgb(180, 180, 180))
+                            }
                         };
                         badge(ui, relro_txt, relro_col);
 
                         // Canary badge
-                        if binary.mitigations.stack_canary {
-                            badge(ui, "Canary Found", egui::Color32::from_rgb(50, 180, 80));
-                        } else {
-                            badge(ui, "No Canary", egui::Color32::from_rgb(220, 70, 70));
+                        match binary.mitigations.stack_canary {
+                            Hardening::Enabled => {
+                                badge(ui, "Canary Found", egui::Color32::from_rgb(50, 180, 80));
+                            }
+                            Hardening::Disabled => {
+                                badge(ui, "No Canary", egui::Color32::from_rgb(220, 70, 70));
+                            }
+                            Hardening::Unknown => {
+                                badge(ui, "Canary Unknown", egui::Color32::from_rgb(180, 180, 180));
+                            }
                         }
 
                         // NX badge
-                        if binary.mitigations.nx {
-                            badge(ui, "NX Enabled", egui::Color32::from_rgb(50, 180, 80));
-                        } else {
-                            badge(
-                                ui,
-                                "NX Disabled (RWX)",
-                                egui::Color32::from_rgb(220, 70, 70),
-                            );
+                        match binary.mitigations.nx {
+                            Hardening::Enabled => {
+                                badge(ui, "NX Enabled", egui::Color32::from_rgb(50, 180, 80));
+                            }
+                            Hardening::Disabled => {
+                                badge(
+                                    ui,
+                                    "NX Disabled (RWX)",
+                                    egui::Color32::from_rgb(220, 70, 70),
+                                );
+                            }
+                            Hardening::Unknown => {
+                                badge(ui, "NX Unknown", egui::Color32::from_rgb(180, 180, 180));
+                            }
                         }
 
                         // PIE badge
@@ -852,6 +869,9 @@ impl ViewState {
                                 ("DSO / Shared", egui::Color32::from_rgb(70, 140, 240))
                             }
                             PieStatus::NoPie => ("No PIE", egui::Color32::from_rgb(220, 160, 40)),
+                            PieStatus::Unknown => {
+                                ("PIE Unknown", egui::Color32::from_rgb(180, 180, 180))
+                            }
                         };
                         badge(ui, pie_txt, pie_col);
 
@@ -1022,42 +1042,49 @@ impl ViewState {
                 Relro::Full => ("Full RELRO", egui::Color32::from_rgb(50, 180, 80), "The Global Offset Table (GOT) is completely read-only and immediate binding is enforced, preventing GOT overwrite exploits."),
                 Relro::Partial => ("Partial RELRO", egui::Color32::from_rgb(220, 160, 40), "ELF internal data sections are read-only after relocation, but GOT entries remain writable for lazy symbol binding."),
                 Relro::None => ("No RELRO", egui::Color32::from_rgb(220, 70, 70), "No relocation read-only protection found. Internal tables and the GOT are fully writable."),
+                Relro::Unknown => ("Unknown", egui::Color32::from_rgb(180, 180, 180), "The file has no program headers, so no load-time protection could be assessed."),
             };
             card(ui, "RELRO (Relocation Read-Only)", relro_status, relro_color, relro_desc);
 
             // Stack Canary
-            if mit.stack_canary {
-                card(ui, "Stack Canary Protection", "Enabled", egui::Color32::from_rgb(50, 180, 80), "Stack canary symbols (__stack_chk_fail) detected. Buffer overflows on the stack will trigger immediate termination.");
-            } else {
-                card(ui, "Stack Canary Protection", "Disabled (Vulnerable)", egui::Color32::from_rgb(220, 70, 70), "No stack canary protection symbols found. Stack-based buffer overflows may allow hijacking instruction flow.");
-            }
+            let (canary_status, canary_color, canary_desc) = match mit.stack_canary {
+                Hardening::Enabled => ("Enabled", egui::Color32::from_rgb(50, 180, 80), "Stack canary symbols (__stack_chk_fail) detected. Buffer overflows on the stack will trigger immediate termination."),
+                Hardening::Disabled => ("Disabled (Vulnerable)", egui::Color32::from_rgb(220, 70, 70), "The symbol tables contain no stack canary references. Stack-based buffer overflows may allow hijacking instruction flow."),
+                Hardening::Unknown => ("Unknown", egui::Color32::from_rgb(180, 180, 180), "No symbol table is available, so canary references cannot be observed in this file."),
+            };
+            card(ui, "Stack Canary Protection", canary_status, canary_color, canary_desc);
 
             // NX
-            if mit.nx {
-                card(ui, "NX / DEP (Non-Executable Stack)", "Enabled", egui::Color32::from_rgb(50, 180, 80), "The stack segment is marked non-executable (PT_GNU_STACK without PF_X). Direct shellcode execution on the stack is blocked.");
-            } else {
-                card(ui, "NX / DEP (Executable Stack)", "Disabled (RWX)", egui::Color32::from_rgb(220, 70, 70), "The stack segment allows execution (PF_X). An attacker can inject and directly execute shellcode on the stack.");
-            }
+            let (nx_title, nx_status, nx_color, nx_desc) = match mit.nx {
+                Hardening::Enabled => ("NX / DEP (Non-Executable Stack)", "Enabled", egui::Color32::from_rgb(50, 180, 80), "The stack segment is marked non-executable (PT_GNU_STACK without PF_X). Direct shellcode execution on the stack is blocked."),
+                Hardening::Disabled => ("NX / DEP (Executable Stack)", "Disabled (RWX)", egui::Color32::from_rgb(220, 70, 70), "The stack segment allows execution (PF_X). An attacker can inject and directly execute shellcode on the stack."),
+                Hardening::Unknown => ("NX / DEP (Stack Permissions)", "Unknown", egui::Color32::from_rgb(180, 180, 180), "No PT_GNU_STACK segment is present, so stack execution permissions are left to the kernel default and cannot be read from the file."),
+            };
+            card(ui, nx_title, nx_status, nx_color, nx_desc);
 
             // PIE
             let (pie_status, pie_color, pie_desc) = match mit.pie {
                 PieStatus::Pie => ("PIE Enabled", egui::Color32::from_rgb(50, 180, 80), "Position-Independent Executable loaded at randomized base address via ASLR."),
                 PieStatus::Dso => ("Dynamic Shared Object (DSO)", egui::Color32::from_rgb(70, 140, 240), "Shared library with relocatable code suitable for ASLR address randomization."),
                 PieStatus::NoPie => ("No PIE (Fixed Base)", egui::Color32::from_rgb(220, 160, 40), "Fixed virtual base address executable. Code addresses are static, making ROP chain exploitation easier."),
+                PieStatus::Unknown => ("Unknown", egui::Color32::from_rgb(180, 180, 180), "The file type is neither an executable nor a shared object, so PIE status does not apply."),
             };
             card(ui, "PIE (Position Independent Executable)", pie_status, pie_color, pie_desc);
 
             // Fortify Source
+            let (fortify_status, fortify_color, fortify_desc) = match mit.fortify {
+                Hardening::Enabled => (format!("{} Functions", mit.fortified_functions.len()), egui::Color32::from_rgb(50, 180, 80), "Fortified library calls detected, performing runtime bounds checking on sensitive string/memory operations."),
+                Hardening::Disabled => ("None Detected".to_string(), egui::Color32::from_rgb(180, 180, 180), "No fortified libc wrapper symbols (e.g. __printf_chk) were found in the symbol table."),
+                Hardening::Unknown => ("Unknown".to_string(), egui::Color32::from_rgb(180, 180, 180), "No symbol table is available, so fortified library references cannot be observed in this file."),
+            };
+            card(ui, "FORTIFY_SOURCE", &fortify_status, fortify_color, fortify_desc);
             if !mit.fortified_functions.is_empty() {
-                card(ui, "FORTIFY_SOURCE", &format!("{} Functions", mit.fortified_functions.len()), egui::Color32::from_rgb(50, 180, 80), "Fortified library calls detected, performing runtime bounds checking on sensitive string/memory operations.");
                 ui.collapsing("View Fortified Function Symbols", |ui| {
                     for f in &mit.fortified_functions {
                         ui.monospace(format!("  • {f}"));
                     }
                 });
                 ui.add_space(8.0);
-            } else {
-                card(ui, "FORTIFY_SOURCE", "None Detected", egui::Color32::from_rgb(180, 180, 180), "No fortified libc wrapper symbols (e.g. __printf_chk) were found in the symbol table.");
             }
 
             // W^X RWX Segments
@@ -1540,7 +1567,12 @@ impl ViewState {
             SectionSort::Type => visible.sort_by_key(|s| s.section_type),
             SectionSort::Address => visible.sort_by_key(|s| s.address),
             SectionSort::Size => visible.sort_by_key(|s| s.size),
-            SectionSort::Entropy => visible.sort_by(|a, b| a.entropy.total_cmp(&b.entropy)),
+            SectionSort::Entropy => visible.sort_by(|a, b| {
+                // Sections whose contents were not scanned sort lowest.
+                a.entropy
+                    .unwrap_or(f64::NEG_INFINITY)
+                    .total_cmp(&b.entropy.unwrap_or(f64::NEG_INFINITY))
+            }),
         }
         if !self.section_sort_asc {
             visible.reverse();
@@ -1747,15 +1779,14 @@ impl ViewState {
                         );
 
                         // Entropy with color
-                        let ent_str = format!("{:.2}", section.entropy);
-                        let ent_color = if section.entropy > 7.2 {
-                            egui::Color32::from_rgb(230, 80, 80)
-                        } else if section.entropy > 6.0 {
-                            egui::Color32::from_rgb(220, 160, 40)
-                        } else if section.entropy < 2.0 {
-                            egui::Color32::from_rgb(90, 180, 90)
-                        } else {
-                            ui.visuals().text_color()
+                        let ent_str = section
+                            .entropy
+                            .map_or_else(|| "n/a".to_string(), |entropy| format!("{entropy:.2}"));
+                        let ent_color = match section.entropy {
+                            Some(entropy) if entropy > 7.2 => egui::Color32::from_rgb(230, 80, 80),
+                            Some(entropy) if entropy > 6.0 => egui::Color32::from_rgb(220, 160, 40),
+                            Some(entropy) if entropy < 2.0 => egui::Color32::from_rgb(90, 180, 90),
+                            _ => ui.visuals().weak_text_color(),
                         };
                         cell_label(
                             ui,
@@ -1826,7 +1857,14 @@ impl ViewState {
                                         format_bytes(section.size)
                                     ),
                                 );
-                                row(ui, "Entropy", &format!("{:.3} bits/byte", section.entropy));
+                                row(
+                                    ui,
+                                    "Entropy",
+                                    &section.entropy.map_or_else(
+                                        || "n/a (empty or out-of-bounds)".to_string(),
+                                        |entropy| format!("{entropy:.3} bits/byte"),
+                                    ),
+                                );
                                 row(
                                     ui,
                                     "Address Alignment",

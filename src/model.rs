@@ -69,7 +69,7 @@ pub struct DynamicEntry {
 }
 
 /// One ELF section-table entry.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Section {
     /// Zero-based section-table index.
     pub index: u16,
@@ -94,7 +94,10 @@ pub struct Section {
     /// Entry size if the section contains fixed-size records (`sh_entsize`).
     pub entry_size: u64,
     /// Shannon entropy (0.0 to 8.0 bits/byte) of section contents.
-    pub entropy: f64,
+    ///
+    /// `None` when the contents were not scanned: the section occupies no file
+    /// bytes (`SHT_NOBITS`) or the per-inspection scan budget was exhausted.
+    pub entropy: Option<f64>,
 }
 
 /// One ELF program-header entry.
@@ -291,11 +294,13 @@ pub struct SecurityMitigations {
     /// Relocation Read-Only (RELRO) level.
     pub relro: Relro,
     /// Whether stack canary protection symbols are present.
-    pub stack_canary: bool,
+    pub stack_canary: Hardening,
     /// Whether the stack segment is marked non-executable (NX/DEP).
-    pub nx: bool,
+    pub nx: Hardening,
     /// Position Independent Executable (PIE) status.
     pub pie: PieStatus,
+    /// Whether fortified library calls are referenced, independent of the list below.
+    pub fortify: Hardening,
     /// List of fortified library call symbols detected (e.g. `__printf_chk`).
     pub fortified_functions: Vec<String>,
     /// Count of program segments that have both Write and Execute permissions.
@@ -304,9 +309,37 @@ pub struct SecurityMitigations {
     pub has_insecure_rpath: bool,
 }
 
+/// Tri-state outcome of a hardening check.
+///
+/// `Unknown` means the evidence a check depends on is absent from the file (for
+/// example no symbol table, or no `PT_GNU_STACK`), so absence of the protection
+/// cannot be asserted. Reporting `Disabled` in that case would claim a
+/// vulnerability the file does not demonstrate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Hardening {
+    /// The protection was detected.
+    Enabled,
+    /// The evidence needed by the check was present and showed no protection.
+    Disabled,
+    /// The evidence needed by the check is missing from the file.
+    Unknown,
+}
+
+impl fmt::Display for Hardening {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Enabled => formatter.write_str("Enabled"),
+            Self::Disabled => formatter.write_str("Disabled"),
+            Self::Unknown => formatter.write_str("Unknown"),
+        }
+    }
+}
+
 /// RELRO protection status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Relro {
+    /// Program headers were unavailable, so RELRO could not be assessed.
+    Unknown,
     /// No RELRO segment present.
     None,
     /// GNU_RELRO segment present without immediate binding.
@@ -318,6 +351,7 @@ pub enum Relro {
 impl fmt::Display for Relro {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unknown => formatter.write_str("Unknown (no program headers)"),
             Self::None => formatter.write_str("No RELRO"),
             Self::Partial => formatter.write_str("Partial RELRO"),
             Self::Full => formatter.write_str("Full RELRO"),
@@ -328,6 +362,8 @@ impl fmt::Display for Relro {
 /// Position Independent Executable (PIE) status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PieStatus {
+    /// The file type does not describe an executable or shared object.
+    Unknown,
     /// Standard executable built with fixed base address.
     NoPie,
     /// Position Independent Executable.
@@ -339,6 +375,7 @@ pub enum PieStatus {
 impl fmt::Display for PieStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unknown => formatter.write_str("Unknown (not an executable or shared object)"),
             Self::NoPie => formatter.write_str("No PIE"),
             Self::Pie => formatter.write_str("PIE enabled"),
             Self::Dso => formatter.write_str("Dynamic Shared Object (DSO)"),
