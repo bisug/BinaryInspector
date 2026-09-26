@@ -33,7 +33,7 @@ jobs:
           toolchain: 1.98.1
       - run: cargo build --release --locked --bin binary-inspector-gui
       - name: Generate build provenance attestation
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.2.3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2.2.3
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           subject-path: 'target/release/binary-inspector-gui*'
