@@ -828,6 +828,7 @@ fn parse_notes(
     segments: &[Segment],
 ) -> Result<Vec<ElfNote>, AppError> {
     let mut notes = Vec::new();
+    let mut text_bytes = 0;
 
     // Check SHT_NOTE sections first, or PT_NOTE segments if no sections
     let note_slices = sections
@@ -901,11 +902,14 @@ fn parse_notes(
             let desc_raw = &data[cur..desc_end];
             cur = next_cur;
 
-            let clean_name = escape_bytes(if let Some(&0) = name_raw.last() {
-                &name_raw[..name_raw.len() - 1]
-            } else {
-                name_raw
-            });
+            let clean_name = take_text(
+                escape_bytes(capped_name(if let Some(&0) = name_raw.last() {
+                    &name_raw[..name_raw.len() - 1]
+                } else {
+                    name_raw
+                })),
+                &mut text_bytes,
+            )?;
 
             let mut build_id = None;
             let mut abi_tag = None;
@@ -1004,7 +1008,15 @@ fn parse_notes(
                     _ => {}
                 }
             } else if clean_name == "Go" && note_type == 4 {
-                description = format!("Go Build ID: {}", escape_bytes(desc_raw));
+                // The payload is a raw build ID, not a string table entry, so it has no
+                // terminator to bound it. It runs to the end of the note and would be
+                // expanded 4x by `escape_bytes`, so it is capped like every other
+                // decoded text and charged to the shared budget.
+                let capped = &desc_raw[..desc_raw.len().min(MAX_STRING_BYTES)];
+                description = format!(
+                    "Go Build ID: {}",
+                    take_text(escape_bytes(capped), &mut text_bytes)?
+                );
             }
 
             notes.push(ElfNote {
@@ -1274,15 +1286,21 @@ fn parse_sections(
         let entropy = if section.section_type == 8 || section.size == 0 {
             None
         } else {
-            let data = file_slice(bytes, section.offset, section.size, "section contents")?;
-            if scanned_bytes
-                .checked_add(data.len())
-                .is_some_and(|total| total <= MAX_TOTAL_SECTION_SCAN_BYTES)
-            {
-                scanned_bytes += data.len();
-                Some(calculate_entropy(data))
-            } else {
-                None
+            // A section whose declared extent runs past the end of the file is
+            // damaged, not fatal: notes and relocations are skipped on the same
+            // condition. Report the section without entropy rather than discarding
+            // the whole inspection.
+            let data = file_slice(bytes, section.offset, section.size, "section contents").ok();
+            match data {
+                Some(data)
+                    if scanned_bytes
+                        .checked_add(data.len())
+                        .is_some_and(|total| total <= MAX_TOTAL_SECTION_SCAN_BYTES) =>
+                {
+                    scanned_bytes += data.len();
+                    Some(calculate_entropy(data))
+                }
+                _ => None,
             }
         };
 
@@ -1567,6 +1585,10 @@ fn c_string(bytes: &[u8], what: &'static str) -> Result<String, AppError> {
     Ok(escape_bytes(&bytes[..end]))
 }
 
+fn capped_name(name: &[u8]) -> &[u8] {
+    &name[..name.len().min(MAX_STRING_BYTES)]
+}
+
 fn take_text(text: String, total: &mut usize) -> Result<String, AppError> {
     *total = total
         .checked_add(text.len())
@@ -1728,8 +1750,10 @@ mod tests {
         assert_eq!(binary.sections[1].name, ".bad\\x1B");
     }
 
+    /// A section whose extent runs past the end of the file is damaged, not
+    /// fatal. The section is still reported; only its entropy is withheld.
     #[test]
-    fn rejects_a_section_outside_the_file() {
+    fn tolerates_a_section_outside_the_file() {
         let mut bytes = vec![0_u8; 200];
         bytes[..4].copy_from_slice(b"\x7fELF");
         bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
@@ -1740,14 +1764,16 @@ mod tests {
         bytes[60..62].copy_from_slice(&2_u16.to_le_bytes());
         bytes[62..64].copy_from_slice(&1_u16.to_le_bytes());
         bytes[68..72].copy_from_slice(&1_u32.to_le_bytes());
-        bytes[88..96].copy_from_slice(&200_u64.to_le_bytes());
-        bytes[96..104].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[88..96].copy_from_slice(&200_u64.to_le_bytes()); // sh_offset
+        bytes[96..104].copy_from_slice(&1_u64.to_le_bytes()); // sh_size, past the end
         bytes[132..136].copy_from_slice(&3_u32.to_le_bytes());
         bytes[128 + 24..128 + 32].copy_from_slice(&192_u64.to_le_bytes());
         bytes[128 + 32..128 + 40].copy_from_slice(&1_u64.to_le_bytes());
         bytes[192] = 0;
 
-        assert!(parse(&bytes, 200).is_err());
+        let binary = parse(&bytes, 200).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(binary.sections.len(), 2);
+        assert_eq!(binary.sections[0].entropy, None);
     }
 
     #[test]
@@ -1904,6 +1930,83 @@ mod tests {
         bytes[40..48].copy_from_slice(&0x100_0000_u64.to_le_bytes()); // shoff way out of file
 
         assert!(parse(&bytes, 64).is_err());
+    }
+
+    /// Regression: a note payload must not expand past the decoded-text budget.
+    /// A build ID runs to the end of the note, so escaping it unchecked turned a
+    /// bounded file into a 4x larger string.
+    #[test]
+    fn bounds_a_go_build_id_note() {
+        let desc = 4 * 1024 * 1024_usize;
+        let mut bytes = vec![0_u8; 64];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        u16_into(&mut bytes, 16, 2);
+        u16_into(&mut bytes, 18, 62);
+        u32_into(&mut bytes, 20, 1);
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64_u64.to_le_bytes()); // e_phoff
+                                                              // No section table, so e_shoff stays 0.
+        u16_into(&mut bytes, 54, 56); // e_phentsize
+        u16_into(&mut bytes, 56, 1); // e_phnum
+
+        bytes.resize(120, 0);
+        let note_len = 12 + 4 + desc;
+        u32_into(&mut bytes, 64, 4); // PT_NOTE
+        u64_into(&mut bytes, 72, 120); // p_offset
+        u64_into(&mut bytes, 96, note_len as u64); // p_filesz
+
+        bytes.resize(136, 0);
+        u32_into(&mut bytes, 120, 3); // n_namesz
+        u32_into(&mut bytes, 124, desc as u32); // n_descsz
+        u32_into(&mut bytes, 128, 4); // NT_GO_BUILD_ID
+        bytes[132..135].copy_from_slice(b"Go\0");
+        bytes.resize(120 + note_len, 0xff);
+
+        let total = bytes.len();
+        let binary = parse(&bytes, total as u64).unwrap_or_else(|error| panic!("{error}"));
+        let description = &binary.notes[0].description;
+        assert!(description.starts_with("Go Build ID: "));
+        assert!(
+            description.len() <= MAX_STRING_BYTES * 4 + "Go Build ID: ".len(),
+            "description grew to {} bytes from a {total}-byte file",
+            description.len()
+        );
+    }
+
+    /// Regression: a section whose declared extent runs past the end of the file
+    /// is damaged, not fatal. Notes and relocations already degrade instead of
+    /// failing; sections must do the same.
+    #[test]
+    fn reports_a_section_whose_extent_exceeds_the_file() {
+        let mut bytes = vec![0_u8; 192];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        u16_into(&mut bytes, 16, 2);
+        u16_into(&mut bytes, 18, 62);
+        u32_into(&mut bytes, 20, 1);
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[40..48].copy_from_slice(&64_u64.to_le_bytes()); // e_shoff
+        u16_into(&mut bytes, 58, 64); // e_shentsize
+        u16_into(&mut bytes, 60, 2); // e_shnum
+        u16_into(&mut bytes, 62, 0); // e_shstrndx
+
+        // Section 0 is the section-name string table, section 1 claims 1 MiB.
+        u32_into(&mut bytes, 64 + 4, 3); // SHT_STRTAB
+        u64_into(&mut bytes, 64 + 24, 300); // sh_offset
+        u64_into(&mut bytes, 64 + 32, 5); // sh_size
+        u32_into(&mut bytes, 128, 1); // sh_name -> "foo" in the table above
+        u32_into(&mut bytes, 128 + 4, 1); // SHT_PROGBITS
+        u64_into(&mut bytes, 128 + 24, 300); // sh_offset
+        u64_into(&mut bytes, 128 + 32, 1024 * 1024); // sh_size, past the end
+        bytes.resize(305, 0);
+        bytes[300..305].copy_from_slice(b"\0foo\0");
+
+        let total = bytes.len();
+        let binary = parse(&bytes, total as u64).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(binary.sections.len(), 2);
+        assert_eq!(binary.sections[1].name, "foo");
+        assert_eq!(binary.sections[1].entropy, None);
     }
 
     fn u16_into(bytes: &mut [u8], at: usize, value: u16) {
