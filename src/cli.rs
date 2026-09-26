@@ -8,7 +8,7 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(
     version,
-    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n  binary-inspector /bin/ls --json\n\nExit codes: 0 success; 1 usage; 2 I/O; 3 parse error."
+    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n  binary-inspector /bin/ls --json\n\nExit codes:\n  0  success\n  1  usage error\n  2  I/O error, or the target is not a regular file\n  3  the input was rejected: not a valid ELF binary, the file exceeds the size limit,\n     or the report could not be serialized"
 )]
 pub struct Cli {
     /// ELF file to inspect.
