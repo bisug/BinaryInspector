@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use clap::{error::ErrorKind, Parser};
+use clap::{Parser, error::ErrorKind};
 
 use binary_inspector::{
     cli::Cli,

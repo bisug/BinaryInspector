@@ -6,7 +6,7 @@
   <a href="https://scorecard.dev/viewer/?site=github.com/bisug/BinaryInspector"><img src="https://api.scorecard.dev/projects/github.com/bisug/BinaryInspector/badge" alt="OpenSSF Scorecard"></a>
   <a href="https://github.com/bisug/BinaryInspector/releases"><img src="https://img.shields.io/github/v/release/bisug/BinaryInspector.svg" alt="Latest release"></a>
   <a href="https://github.com/bisug/BinaryInspector/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-0b6e4f.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/Rust-1.98.1%2B-b7410e.svg" alt="Rust 1.98.1 or newer">
+  <img src="https://img.shields.io/badge/Rust-1.99.0%2B-b7410e.svg" alt="Rust 1.99.0 or newer">
   <a href="https://github.com/bisug/BinaryInspector/security"><img src="https://img.shields.io/badge/security-policy-5b5bd6.svg" alt="Security policy"></a>
   <a href="https://github.com/bisug/BinaryInspector/wiki"><img src="https://img.shields.io/badge/docs-wiki-8a63d2.svg" alt="Documentation wiki"></a>
 </p>
@@ -119,7 +119,7 @@ Every binary is untrusted input. BinaryInspector accepts regular, non-symlink fi
 
 ## Development
 
-Requires Rust 1.98.1 or newer, edition 2021. The CLI runs on Linux, macOS, and Windows hosts; v1 inspects ELF only.
+Requires Rust 1.99.0 or newer, edition 2024. The CLI runs on Linux, macOS, and Windows hosts; v1 inspects ELF only.
 
 ```sh
 cargo fmt --check

@@ -1,6 +1,6 @@
 # Contributing
 
-Use Rust 1.98.1 and keep changes small and reviewable. Before committing, run:
+Use Rust 1.99.0 and keep changes small and reviewable. Before committing, run:
 
 ```sh
 cargo fmt --check

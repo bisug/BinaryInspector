@@ -404,15 +404,15 @@ impl InspectorApp {
         // Bottom Status Bar
         ui.separator();
         ui.horizontal(|ui| {
-            if let Some((msg, time)) = &self.view_state.status_message {
-                if time.elapsed() < Duration::from_secs(3) {
-                    ui.label(
-                        egui::RichText::new(format!("✓ {msg}"))
-                            .color(egui::Color32::from_rgb(70, 180, 100))
-                            .strong(),
-                    );
-                    ui.separator();
-                }
+            if let Some((msg, time)) = &self.view_state.status_message
+                && time.elapsed() < Duration::from_secs(3)
+            {
+                ui.label(
+                    egui::RichText::new(format!("✓ {msg}"))
+                        .color(egui::Color32::from_rgb(70, 180, 100))
+                        .strong(),
+                );
+                ui.separator();
             }
 
             match &self.inspection {
@@ -1439,84 +1439,80 @@ impl ViewState {
             });
 
         // Bottom Detail Panel
-        if let Some(idx) = self.selected_symbol {
-            if let Some(sym) = binary.symbols.get(idx) {
-                ui.separator();
+        if let Some(idx) = self.selected_symbol
+            && let Some(sym) = binary.symbols.get(idx)
+        {
+            ui.separator();
 
-                let (splitter_rect, splitter_resp) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 6.0),
-                    egui::Sense::click_and_drag(),
-                );
-                if splitter_resp.hovered() || splitter_resp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                }
-                if splitter_resp.dragged() {
-                    self.symbol_detail_height = (self.symbol_detail_height
-                        - splitter_resp.drag_delta().y)
-                        .clamp(80.0, 350.0);
-                }
+            let (splitter_rect, splitter_resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 6.0),
+                egui::Sense::click_and_drag(),
+            );
+            if splitter_resp.hovered() || splitter_resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            if splitter_resp.dragged() {
+                self.symbol_detail_height =
+                    (self.symbol_detail_height - splitter_resp.drag_delta().y).clamp(80.0, 350.0);
+            }
 
-                let fill = if splitter_resp.dragged() {
-                    egui::Color32::from_rgb(91, 91, 214)
-                } else {
-                    ui.visuals().faint_bg_color
-                };
-                ui.painter()
-                    .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
+            let fill = if splitter_resp.dragged() {
+                egui::Color32::from_rgb(91, 91, 214)
+            } else {
+                ui.visuals().faint_bg_color
+            };
+            ui.painter()
+                .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
 
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), self.symbol_detail_height),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong(format!("Symbol Details: {}", sym.name));
-                            if ui.small_button("📋 Copy Name").clicked() {
-                                ui.ctx().copy_text(sym.name.clone());
-                                self.set_status("Symbol name copied");
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), self.symbol_detail_height),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(format!("Symbol Details: {}", sym.name));
+                        if ui.small_button("📋 Copy Name").clicked() {
+                            ui.ctx().copy_text(sym.name.clone());
+                            self.set_status("Symbol name copied");
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕ Close").clicked() {
+                                self.selected_symbol = None;
                             }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.small_button("✕ Close").clicked() {
-                                        self.selected_symbol = None;
-                                    }
+                        });
+                    });
+                    ui.add_space(4.0);
+
+                    egui::Grid::new("sym_detail_grid")
+                        .num_columns(4)
+                        .spacing([24.0, 6.0])
+                        .show(ui, |ui| {
+                            row(ui, "Value / Address", &format!("{:#010x}", sym.value));
+                            row(ui, "Size", &format!("{} bytes", sym.size));
+                            row(ui, "Type", &sym.sym_type.to_string());
+                            row(ui, "Binding", &sym.binding.to_string());
+                            row(ui, "Visibility", &sym.visibility.to_string());
+                            row(ui, "Origin Table", &sym.table.to_string());
+                            row(
+                                ui,
+                                "Role",
+                                if sym.is_import {
+                                    "Imported symbol [UNDEF]"
+                                } else if sym.is_export {
+                                    "Exported symbol [DEFINED]"
+                                } else {
+                                    "Internal symbol"
                                 },
                             );
+                            row(
+                                ui,
+                                "Section Index",
+                                &sym.section_index
+                                    .map(|i| i.to_string())
+                                    .unwrap_or_else(|| "UNDEF".to_string()),
+                            );
                         });
-                        ui.add_space(4.0);
-
-                        egui::Grid::new("sym_detail_grid")
-                            .num_columns(4)
-                            .spacing([24.0, 6.0])
-                            .show(ui, |ui| {
-                                row(ui, "Value / Address", &format!("{:#010x}", sym.value));
-                                row(ui, "Size", &format!("{} bytes", sym.size));
-                                row(ui, "Type", &sym.sym_type.to_string());
-                                row(ui, "Binding", &sym.binding.to_string());
-                                row(ui, "Visibility", &sym.visibility.to_string());
-                                row(ui, "Origin Table", &sym.table.to_string());
-                                row(
-                                    ui,
-                                    "Role",
-                                    if sym.is_import {
-                                        "Imported symbol [UNDEF]"
-                                    } else if sym.is_export {
-                                        "Exported symbol [DEFINED]"
-                                    } else {
-                                        "Internal symbol"
-                                    },
-                                );
-                                row(
-                                    ui,
-                                    "Section Index",
-                                    &sym.section_index
-                                        .map(|i| i.to_string())
-                                        .unwrap_or_else(|| "UNDEF".to_string()),
-                                );
-                            });
-                    },
-                );
-            }
+                },
+            );
         }
     }
 
@@ -1800,91 +1796,83 @@ impl ViewState {
             });
 
         // Bottom Detail Panel
-        if let Some(idx) = self.selected_section {
-            if let Some(section) = binary.sections.iter().find(|s| s.index == idx) {
-                ui.separator();
+        if let Some(idx) = self.selected_section
+            && let Some(section) = binary.sections.iter().find(|s| s.index == idx)
+        {
+            ui.separator();
 
-                let (splitter_rect, splitter_resp) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 6.0),
-                    egui::Sense::click_and_drag(),
-                );
-                if splitter_resp.hovered() || splitter_resp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                }
-                if splitter_resp.dragged() {
-                    self.section_detail_height = (self.section_detail_height
-                        - splitter_resp.drag_delta().y)
-                        .clamp(80.0, 350.0);
-                }
+            let (splitter_rect, splitter_resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 6.0),
+                egui::Sense::click_and_drag(),
+            );
+            if splitter_resp.hovered() || splitter_resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            if splitter_resp.dragged() {
+                self.section_detail_height =
+                    (self.section_detail_height - splitter_resp.drag_delta().y).clamp(80.0, 350.0);
+            }
 
-                let fill = if splitter_resp.dragged() {
-                    egui::Color32::from_rgb(91, 91, 214)
-                } else {
-                    ui.visuals().faint_bg_color
-                };
-                ui.painter()
-                    .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
+            let fill = if splitter_resp.dragged() {
+                egui::Color32::from_rgb(91, 91, 214)
+            } else {
+                ui.visuals().faint_bg_color
+            };
+            ui.painter()
+                .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
 
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), self.section_detail_height),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong(format!("Section #{}: {}", section.index, section.name));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.small_button("✕ Close").clicked() {
-                                        self.selected_section = None;
-                                    }
-                                },
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), self.section_detail_height),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(format!("Section #{}: {}", section.index, section.name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕ Close").clicked() {
+                                self.selected_section = None;
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+
+                    egui::Grid::new("sec_detail_grid")
+                        .num_columns(4)
+                        .spacing([24.0, 6.0])
+                        .show(ui, |ui| {
+                            row(ui, "Virtual Address", &format!("{:#010x}", section.address));
+                            row(ui, "File Offset", &format!("{:#x}", section.offset));
+                            row(
+                                ui,
+                                "Size",
+                                &format!("{} bytes ({})", section.size, format_bytes(section.size)),
+                            );
+                            row(
+                                ui,
+                                "Entropy",
+                                &section.entropy.map_or_else(
+                                    || "n/a (empty or out-of-bounds)".to_string(),
+                                    |entropy| format!("{entropy:.3} bits/byte"),
+                                ),
+                            );
+                            row(
+                                ui,
+                                "Address Alignment",
+                                &format!("{:#x}", section.alignment),
+                            );
+                            row(
+                                ui,
+                                "Entry Size (sh_entsize)",
+                                &format!("{:#x}", section.entry_size),
+                            );
+                            row(ui, "Extra Info (sh_info)", &format!("{:#x}", section.info));
+                            row(
+                                ui,
+                                "Linked Section (sh_link)",
+                                &format!("#{}", section.link),
                             );
                         });
-                        ui.add_space(4.0);
-
-                        egui::Grid::new("sec_detail_grid")
-                            .num_columns(4)
-                            .spacing([24.0, 6.0])
-                            .show(ui, |ui| {
-                                row(ui, "Virtual Address", &format!("{:#010x}", section.address));
-                                row(ui, "File Offset", &format!("{:#x}", section.offset));
-                                row(
-                                    ui,
-                                    "Size",
-                                    &format!(
-                                        "{} bytes ({})",
-                                        section.size,
-                                        format_bytes(section.size)
-                                    ),
-                                );
-                                row(
-                                    ui,
-                                    "Entropy",
-                                    &section.entropy.map_or_else(
-                                        || "n/a (empty or out-of-bounds)".to_string(),
-                                        |entropy| format!("{entropy:.3} bits/byte"),
-                                    ),
-                                );
-                                row(
-                                    ui,
-                                    "Address Alignment",
-                                    &format!("{:#x}", section.alignment),
-                                );
-                                row(
-                                    ui,
-                                    "Entry Size (sh_entsize)",
-                                    &format!("{:#x}", section.entry_size),
-                                );
-                                row(ui, "Extra Info (sh_info)", &format!("{:#x}", section.info));
-                                row(
-                                    ui,
-                                    "Linked Section (sh_link)",
-                                    &format!("#{}", section.link),
-                                );
-                            });
-                    },
-                );
-            }
+                },
+            );
         }
     }
 
@@ -2127,70 +2115,66 @@ impl ViewState {
             });
 
         // Bottom Detail Panel
-        if let Some(idx) = self.selected_segment {
-            if let Some(segment) = binary.segments.iter().find(|s| s.index == idx) {
-                ui.separator();
+        if let Some(idx) = self.selected_segment
+            && let Some(segment) = binary.segments.iter().find(|s| s.index == idx)
+        {
+            ui.separator();
 
-                let (splitter_rect, splitter_resp) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 6.0),
-                    egui::Sense::click_and_drag(),
-                );
-                if splitter_resp.hovered() || splitter_resp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                }
-                if splitter_resp.dragged() {
-                    self.segment_detail_height = (self.segment_detail_height
-                        - splitter_resp.drag_delta().y)
-                        .clamp(80.0, 350.0);
-                }
-
-                let fill = if splitter_resp.dragged() {
-                    egui::Color32::from_rgb(91, 91, 214)
-                } else {
-                    ui.visuals().faint_bg_color
-                };
-                ui.painter()
-                    .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
-
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), self.segment_detail_height),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong(format!(
-                                "Segment #{}: {}",
-                                segment.index,
-                                segment_type_name(segment.segment_type)
-                            ));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.small_button("✕ Close").clicked() {
-                                        self.selected_segment = None;
-                                    }
-                                },
-                            );
-                        });
-                        ui.add_space(4.0);
-
-                        egui::Grid::new("seg_detail_grid")
-                            .num_columns(4)
-                            .spacing([24.0, 6.0])
-                            .show(ui, |ui| {
-                                row(
-                                    ui,
-                                    "Virtual Address",
-                                    &format!("{:#010x}", segment.virtual_address),
-                                );
-                                row(ui, "File Offset", &format!("{:#x}", segment.offset));
-                                row(ui, "File Size", &format_bytes(segment.file_size));
-                                row(ui, "Memory Size", &format_bytes(segment.memory_size));
-                                row(ui, "Alignment", &format!("{:#x}", segment.alignment));
-                                row(ui, "Flags", &segment_flags_str(segment.flags));
-                            });
-                    },
-                );
+            let (splitter_rect, splitter_resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 6.0),
+                egui::Sense::click_and_drag(),
+            );
+            if splitter_resp.hovered() || splitter_resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
             }
+            if splitter_resp.dragged() {
+                self.segment_detail_height =
+                    (self.segment_detail_height - splitter_resp.drag_delta().y).clamp(80.0, 350.0);
+            }
+
+            let fill = if splitter_resp.dragged() {
+                egui::Color32::from_rgb(91, 91, 214)
+            } else {
+                ui.visuals().faint_bg_color
+            };
+            ui.painter()
+                .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), self.segment_detail_height),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(format!(
+                            "Segment #{}: {}",
+                            segment.index,
+                            segment_type_name(segment.segment_type)
+                        ));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕ Close").clicked() {
+                                self.selected_segment = None;
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+
+                    egui::Grid::new("seg_detail_grid")
+                        .num_columns(4)
+                        .spacing([24.0, 6.0])
+                        .show(ui, |ui| {
+                            row(
+                                ui,
+                                "Virtual Address",
+                                &format!("{:#010x}", segment.virtual_address),
+                            );
+                            row(ui, "File Offset", &format!("{:#x}", segment.offset));
+                            row(ui, "File Size", &format_bytes(segment.file_size));
+                            row(ui, "Memory Size", &format_bytes(segment.memory_size));
+                            row(ui, "Alignment", &format!("{:#x}", segment.alignment));
+                            row(ui, "Flags", &segment_flags_str(segment.flags));
+                        });
+                },
+            );
         }
     }
 
@@ -2519,11 +2503,7 @@ fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
 
 fn sort_arrow(is_active: bool, is_asc: bool) -> Option<&'static str> {
     if is_active {
-        if is_asc {
-            Some(" ▲")
-        } else {
-            Some(" ▼")
-        }
+        if is_asc { Some(" ▲") } else { Some(" ▼") }
     } else {
         None
     }
@@ -2726,11 +2706,7 @@ fn section_flags_str(flags: u64) -> String {
     if flags & 0x400 != 0 {
         s.push('T');
     }
-    if s.is_empty() {
-        "-".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "-".to_string() } else { s }
 }
 
 fn segment_type_name(stype: u32) -> &'static str {

@@ -129,7 +129,10 @@ impl fmt::Display for ParseError {
                 write!(formatter, "invalid {what}: {detail}")
             }
             Self::InvalidStringTable(what) => {
-                write!(formatter, "{what} is unterminated or exceeds inspection limit")
+                write!(
+                    formatter,
+                    "{what} is unterminated or exceeds inspection limit"
+                )
             }
             Self::LimitExceeded { what, limit } => {
                 write!(formatter, "{what} exceeds limit of {limit}")

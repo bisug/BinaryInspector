@@ -486,12 +486,12 @@ fn parse_symbols(
     // loader still uses PT_DYNAMIC. Synthesising descriptors for a segment-sourced
     // dynamic table keeps the loop below the single implementation of decoding.
     let mut tables = sections.to_vec();
-    if !sections.iter().any(|section| section.section_type == 11) {
-        if let Some((symtab, strings)) = dynamic_symbol_table(bytes, class, endianness, segments)? {
-            let link = tables.len() as u32; // bounded by MAX_TABLE_ENTRIES
-            tables.push(strings);
-            tables.push(Section { link, ..symtab });
-        }
+    if !sections.iter().any(|section| section.section_type == 11)
+        && let Some((symtab, strings)) = dynamic_symbol_table(bytes, class, endianness, segments)?
+    {
+        let link = tables.len() as u32; // bounded by MAX_TABLE_ENTRIES
+        tables.push(strings);
+        tables.push(Section { link, ..symtab });
     }
 
     for section in &tables {
@@ -743,23 +743,20 @@ fn dynamic_symbol_count(
     };
 
     // DT_HASH: second word of the SysV hash table is the symbol count (nchain).
-    if let Some(address) = address_of(4) {
-        if let Some(offset) = vaddr_to_offset(segments, address) {
-            if let Ok(offset) = usize::try_from(offset) {
-                if let Some(table) = bytes.get(offset..) {
-                    if let Ok(nchain) = read_u32(table, 4, endianness) {
-                        return Some(nchain as usize);
-                    }
-                }
-            }
-        }
+    if let Some(address) = address_of(4)
+        && let Some(offset) = vaddr_to_offset(segments, address)
+        && let Ok(offset) = usize::try_from(offset)
+        && let Some(table) = bytes.get(offset..)
+        && let Ok(nchain) = read_u32(table, 4, endianness)
+    {
+        return Some(nchain as usize);
     }
 
     // DT_GNU_HASH: symbol numbers end at the last chain entry.
-    if let Some(address) = address_of(0x6fff_fef5) {
-        if let Some(count) = gnu_hash_symbol_count(bytes, class, endianness, address, segments) {
-            return Some(count);
-        }
+    if let Some(address) = address_of(0x6fff_fef5)
+        && let Some(count) = gnu_hash_symbol_count(bytes, class, endianness, address, segments)
+    {
+        return Some(count);
     }
 
     // Last resort: dynamic symbols sit immediately before the string table, which
@@ -1700,7 +1697,7 @@ fn os_abi(value: u8) -> OsAbi {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, string_at, MAX_STRING_BYTES};
+    use super::{MAX_STRING_BYTES, parse, string_at};
     use crate::model::{ElfClass, Endianness, Machine};
 
     #[test]
@@ -1872,7 +1869,7 @@ mod tests {
         u32_into(&mut bytes, 20, 1);
         bytes[24..32].copy_from_slice(&0x1000_u64.to_le_bytes()); // entry
         bytes[32..40].copy_from_slice(&64_u64.to_le_bytes()); // phoff
-                                                              // e_shoff (40..48) stays 0
+        // e_shoff (40..48) stays 0
         bytes[52..54].copy_from_slice(&64_u16.to_le_bytes()); // ehsize
         bytes[54..56].copy_from_slice(&56_u16.to_le_bytes()); // phentsize
         u16_into(&mut bytes, 56, 3); // phnum: PT_LOAD + PT_DYNAMIC + PT_GNU_STACK
@@ -1884,13 +1881,13 @@ mod tests {
         bytes[80..88].copy_from_slice(&0_u64.to_le_bytes()); // vaddr
         bytes[96..104].copy_from_slice(&0x280_u64.to_le_bytes()); // filesz
         bytes[104..112].copy_from_slice(&0x280_u64.to_le_bytes()); // memsz
-                                                                   // PT_DYNAMIC at file offset 0x200
+        // PT_DYNAMIC at file offset 0x200
         u32_into(&mut bytes, 120, 2);
         u32_into(&mut bytes, 124, 6); // PF_R | PF_W
         bytes[128..136].copy_from_slice(&0x200_u64.to_le_bytes()); // offset
         bytes[136..144].copy_from_slice(&0x200_u64.to_le_bytes()); // vaddr
         bytes[152..160].copy_from_slice(&0x50_u64.to_le_bytes()); // filesz
-                                                                  // PT_GNU_STACK, RW (no PF_X) => NX enabled
+        // PT_GNU_STACK, RW (no PF_X) => NX enabled
         u32_into(&mut bytes, 176, 0x6474_e551);
         u32_into(&mut bytes, 180, 6);
         bytes[184..192].copy_from_slice(&0x200_u64.to_le_bytes());
@@ -1946,7 +1943,7 @@ mod tests {
         u32_into(&mut bytes, 20, 1);
         bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
         bytes[32..40].copy_from_slice(&64_u64.to_le_bytes()); // e_phoff
-                                                              // No section table, so e_shoff stays 0.
+        // No section table, so e_shoff stays 0.
         u16_into(&mut bytes, 54, 56); // e_phentsize
         u16_into(&mut bytes, 56, 1); // e_phnum
 

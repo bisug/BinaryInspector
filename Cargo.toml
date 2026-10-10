@@ -1,8 +1,8 @@
 [package]
 name = "binary-inspector"
 version = "0.3.0"
-edition = "2021"
-rust-version = "1.98.1"
+edition = "2024"
+rust-version = "1.99.0"
 license = "MIT"
 description = "Safe, local inspection of ELF binaries"
 
