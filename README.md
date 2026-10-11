@@ -11,17 +11,32 @@
   <a href="https://github.com/bisug/BinaryInspector/wiki"><img src="https://img.shields.io/badge/docs-wiki-8a63d2.svg" alt="Documentation wiki"></a>
 </p>
 
-BinaryInspector is a safe, local Rust CLI and native desktop application for inspecting ELF binaries. It never executes, loads, or dynamically links its target and performs no runtime network I/O.
+BinaryInspector is a safe, local Rust CLI and native desktop application for inspecting ELF, Windows PE/COFF, and Apple Mach-O binaries. It never executes, loads, or dynamically links its target and performs no runtime network I/O.
 
 **Documentation lives in the [wiki](https://github.com/bisug/BinaryInspector/wiki)** — installation, CLI reference, GUI guide, security checks, JSON schema, safety model, and more.
 
-## Current capabilities
+## Supported Binary Formats
 
-- ELF32/ELF64 identity, ABI, machine, endianness, type, entry point, and file size
-- Section and program segment tables
-- Dynamic interpreter, `DT_NEEDED`, `RPATH`, and `RUNPATH`
-- Cross-platform native desktop GUI (`binary-inspector-gui`) with file dialog, drag-and-drop, and background inspection
-- Bounded reads, checked parser arithmetic, symlink/FIFO traversal protection, and terminal-safe binary strings (`\xNN` escaping)
+BinaryInspector provides full, safe static inspection across all major desktop and server executable formats without executing untrusted code:
+
+| Format | Operating Systems | Architecture Coverage | Common File Types / Extensions | Key Capabilities |
+| :--- | :--- | :--- | :--- | :--- |
+| **ELF** | Linux, FreeBSD, NetBSD, OpenBSD, Android | x86 (32/64), ARM, AArch64, RISC-V, MIPS, PowerPC, s390x | Executables, `.so`, `.o`, core dumps | ELF32/64 headers, section & program segments, dynamic linking (`DT_NEEDED`, `RPATH`), relocations, symbols, GNU build notes, checksec mitigations (RELRO, Canary, NX, PIE, Fortify). |
+| **PE / COFF** | Windows, Windows Server, UEFI | x86 (i386), x86-64 (AMD64), ARM, ARM64 | `.exe`, `.dll`, `.sys`, `.efi`, `.obj` | DOS header, PE32 & PE32+ optional headers, data directories, section tables, virtual addresses, checksec mitigations (ASLR, High Entropy VA, DEP/NX, Stack Canary). |
+| **Mach-O** | macOS, iOS, iPadOS, watchOS, tvOS, visionOS | x86_64, ARM, ARM64, ARM64e | Executables, `.dylib`, `.bundle` | 32-bit & 64-bit Mach-O headers, load commands (`LC_SEGMENT_64`, `LC_LOAD_DYLIB`, `LC_RPATH`, `LC_MAIN`), UUID, min OS/SDK, checksec mitigations (PIE, Canary, NX/W^X, Fortify). |
+| **Universal / Fat** | Apple Darwin / macOS multi-arch | Multi-slice containers (e.g. x86_64 + ARM64) | Universal binaries, `.dylib`, `.framework` | Fat header (`FAT_MAGIC` / `FAT_MAGIC_64`), slice extraction, architecture enumeration, and deep inspection of target slice payloads. |
+
+## Current Capabilities
+
+- **Format Auto-Detection**: Instant identification and dispatch of ELF, PE/COFF, Mach-O, and Universal Fat binaries.
+- **Security Mitigations (checksec)**: RELRO, Stack Canary, NX/DEP, PIE/ASLR, High Entropy VA, Fortify Source, W^X violations, and insecure RPATHs.
+- **Section & Segment Analysis**: Permissions, virtual mapping, file offsets, and per-section Shannon entropy (0.0 to 8.0 bits/byte) to identify packed or encrypted code.
+- **Strings, Secrets & Embedded Artifacts**: Multi-encoding scanner (ASCII/UTF-8 and UTF-16LE) with automated semantic categorization for URLs, IP addresses, filesystem paths, cryptographic secrets/UUIDs, and email addresses.
+- **Dynamic Linking & Dependencies**: Shared libraries (`DT_NEEDED`, DLLs, Dylibs), interpreter paths, and runtime search paths (`RPATH`, `RUNPATH`).
+- **Symbols & Relocations**: Static and dynamic symbol tables, imports, exports, bindings, visibility, and base relocation entries.
+- **Cross-Platform Native Desktop GUI**: Interactive interface (`binary-inspector-gui`) featuring virtualized tables, sorting, category chips, clipboard actions, drag-and-drop, and background inspection.
+- **Deterministic & Machine-Readable Output**: Unambiguous terminal reports and schema-versioned JSON (`--json`) for automation and CI/CD pipelines.
+- **Memory Safety Guarantee**: Strictly built with `#![forbid(unsafe_code)]` across all modules. Bounded reads, checked parser arithmetic, symlink/FIFO traversal protection, and terminal-safe binary escaping.
 
 ## Installation
 
@@ -95,10 +110,10 @@ Launch the GUI:
 binary-inspector-gui
 ```
 
-- Click **Open binary** to select an ELF binary using the native platform file chooser.
-- Or simply **drag and drop** an ELF binary into the application window.
+- Click **Choose Binary** to select any ELF, PE, or Mach-O binary using the native platform file chooser.
+- Or simply **drag and drop** a binary into the application window.
 - The binary is parsed asynchronously on a background thread while the UI remains fully responsive.
-- Navigate between **Overview**, **Mitigations**, **Symbols**, **Sections**, **Segments**, **Dependencies**, **Notes**, and **Relocations** tabs.
+- Navigate between **Overview**, **Mitigations**, **Symbols**, **Sections**, **Segments**, **Dependencies**, **Notes**, **Relocations**, and **Strings & Secrets** tabs.
 
 Full walkthrough — tabs, sorting, symbol detail pane, and keyboard shortcuts: [GUI Guide](https://github.com/bisug/BinaryInspector/wiki/GUI-Guide).
 
@@ -109,7 +124,7 @@ Full walkthrough — tabs, sorting, symbol detail pane, and keyboard shortcuts: 
 | 0 | Inspection succeeded |
 | 1 | Command-line usage error |
 | 2 | File-system error, including a non-regular target |
-| 3 | Malformed, truncated, or unsupported ELF input |
+| 3 | Malformed, truncated, or unsupported binary input |
 
 Error categories and remediation hints for each failure: [Exit Codes and Errors](https://github.com/bisug/BinaryInspector/wiki/Exit-Codes-and-Errors).
 
@@ -119,7 +134,7 @@ Every binary is untrusted input. BinaryInspector accepts regular, non-symlink fi
 
 ## Development
 
-Requires Rust 1.99.0 or newer, edition 2024. The CLI runs on Linux, macOS, and Windows hosts; v1 inspects ELF only.
+Requires Rust 1.99.0 or newer, edition 2024. The CLI runs on Linux, macOS, and Windows hosts; inspects ELF, PE/COFF, and Mach-O.
 
 ```sh
 cargo fmt --check

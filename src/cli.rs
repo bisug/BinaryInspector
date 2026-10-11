@@ -5,13 +5,19 @@ use std::path::PathBuf;
 use clap::Parser;
 
 /// Inspect metadata in an executable binary without executing it.
+///
+/// Supported formats:
+///   - ELF (Linux, BSD, Android): ELF32 & ELF64
+///   - PE/COFF (Windows): PE32 & PE32+ (.exe, .dll, .sys, .efi)
+///   - Mach-O (macOS, iOS): 32-bit, 64-bit & Universal / Fat multi-architecture containers
 #[derive(Debug, Parser)]
 #[command(
     version,
-    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n  binary-inspector /bin/ls --json\n\nExit codes:\n  0  success\n  1  usage error\n  2  I/O error, or the target is not a regular file\n  3  the input was rejected: not a valid executable binary, the file exceeds the size limit,\n     or the report could not be serialized"
+    about = "Inspect executable binary metadata (ELF, PE/COFF, Mach-O) safely without execution",
+    after_help = "Supported Formats:\n  - ELF: Linux / Unix / BSD executables, shared objects (.so), relocatable objects (.o)\n  - PE/COFF: Windows executables (.exe), dynamic-link libraries (.dll), drivers (.sys), EFI (.efi)\n  - Mach-O: macOS / iOS binaries, dynamic libraries (.dylib), bundles, and Universal Fat archives\n\nExamples:\n  binary-inspector /bin/ls\n  binary-inspector ./app.exe -m\n  binary-inspector ./libtarget.dylib -t\n  binary-inspector ./app -S -l\n  binary-inspector /bin/ls --json\n\nExit codes:\n  0  success\n  1  usage error\n  2  I/O error, or the target is not a regular file\n  3  the input was rejected: not a valid executable binary, the file exceeds the size limit,\n     or the report could not be serialized"
 )]
 pub struct Cli {
-    /// Executable file to inspect (ELF, PE/COFF).
+    /// Executable file to inspect (ELF, PE/COFF, Mach-O, Universal Fat).
     pub file: PathBuf,
     /// Include section information.
     #[arg(short = 'S', long)]

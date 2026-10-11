@@ -469,7 +469,7 @@ impl InspectorApp {
     }
 
     fn choose_file(&mut self) {
-        let dialog = rfd::FileDialog::new().set_title("Select ELF Binary to Inspect");
+        let dialog = rfd::FileDialog::new().set_title("Select Binary to Inspect (ELF, PE, Mach-O)");
         if let Some(path) = dialog.pick_file() {
             self.inspect(path);
         }
@@ -917,13 +917,13 @@ impl InspectorApp {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
-                        "Drag and drop any ELF (Linux) or PE/COFF (Windows .exe/.dll) binary file.\nBinaryInspector safely extracts header structure, security mitigations, symbols, and entropy.",
+                        "Drag and drop any ELF (Linux), PE/COFF (Windows), or Mach-O (macOS) binary.\nBinaryInspector safely inspects metadata, mitigations, symbols, and artifacts without execution.",
                     )
                     .color(ThemeTokens::TEXT_SECONDARY)
                     .size(13.5),
                 );
 
-                ui.add_space(20.0);
+                ui.add_space(16.0);
 
                 let btn = egui::Button::new(
                     egui::RichText::new("  Choose Binary (Ctrl+O)  ")
@@ -937,6 +937,66 @@ impl InspectorApp {
                 if ui.add(btn).clicked() {
                     *choose_file = true;
                 }
+
+                ui.add_space(20.0);
+
+                // Supported Formats Info Card
+                let formats_card = egui::Frame::new()
+                    .fill(ThemeTokens::BG_SURFACE)
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(16, 12));
+
+                formats_card.show(ui, |ui| {
+                    ui.set_max_width(580.0);
+                    ui.label(
+                        egui::RichText::new("SUPPORTED BINARY FORMATS")
+                            .strong()
+                            .size(10.5)
+                            .color(ThemeTokens::TEXT_MUTED),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+
+                        // 1. ELF
+                        ui.vertical(|ui| {
+                            badge(ui, "🐧 Linux / BSD (ELF)", ThemeTokens::INFO);
+                            ui.add_space(3.0);
+                            ui.label(
+                                egui::RichText::new("ELF32 & ELF64\nExecutables, .so, .o, core\nx86, x86-64, ARM, AArch64, RISC-V")
+                                    .size(11.0)
+                                    .color(ThemeTokens::TEXT_SECONDARY),
+                            );
+                        });
+
+                        ui.separator();
+
+                        // 2. PE/COFF
+                        ui.vertical(|ui| {
+                            badge(ui, "🪟 Windows (PE/COFF)", ThemeTokens::SUCCESS);
+                            ui.add_space(3.0);
+                            ui.label(
+                                egui::RichText::new("PE32 & PE32+ (64-bit)\n.exe, .dll, .sys, .efi, COFF\nx86, x86-64, ARM, ARM64")
+                                    .size(11.0)
+                                    .color(ThemeTokens::TEXT_SECONDARY),
+                            );
+                        });
+
+                        ui.separator();
+
+                        // 3. Mach-O
+                        ui.vertical(|ui| {
+                            badge(ui, "🍏 Apple (Mach-O)", ThemeTokens::WARNING);
+                            ui.add_space(3.0);
+                            ui.label(
+                                egui::RichText::new("Mach-O 32 & 64-bit\n.dylib, bundles, Universal Fat\nx86-64, ARM64, ARM64e")
+                                    .size(11.0)
+                                    .color(ThemeTokens::TEXT_SECONDARY),
+                            );
+                        });
+                    });
+                });
             });
 
             // Quick Samples Section
@@ -4412,7 +4472,7 @@ fn render_drop_overlay(ui: &mut egui::Ui) {
                 );
                 ui.add_space(12.0);
                 ui.heading(
-                    egui::RichText::new("Drop ELF Binary to Inspect")
+                    egui::RichText::new("Drop Binary to Inspect (ELF, PE, Mach-O)")
                         .size(24.0)
                         .strong()
                         .color(egui::Color32::WHITE),
