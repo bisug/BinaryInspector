@@ -55,9 +55,6 @@ pub struct Cli {
     /// Emit versioned JSON (schema 1) to stdout instead of human text.
     #[arg(long)]
     pub json: bool,
-    /// Disable color (human output is currently uncolored).
-    #[arg(long)]
-    pub no_color: bool,
 }
 
 #[cfg(test)]

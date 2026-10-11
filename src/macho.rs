@@ -184,6 +184,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     let mut uuid_str: Option<String> = None;
     let mut has_stack_canary = false;
     let mut fortified_functions = HashSet::new();
+    let mut symbol_table_present = false;
     let mut rwx_segments = 0usize;
     let mut has_insecure_rpath = false;
     let mut text_vmaddr: Option<u64> = None;
@@ -193,14 +194,20 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     let cmd_limit = (ncmds as usize).min(MAX_COMMANDS);
 
     for _ in 0..cmd_limit {
-        if cmd_offset + 8 > slice_bytes.len() {
+        let cmd_header_end = cmd_offset
+            .checked_add(8)
+            .ok_or_else(|| ParseError::Malformed("load command offset overflow".to_string()))?;
+        if cmd_header_end > slice_bytes.len() {
             break;
         }
 
         let cmd = read_u32(slice_bytes, cmd_offset, is_little_endian)?;
         let cmdsize = read_u32(slice_bytes, cmd_offset + 4, is_little_endian)? as usize;
+        let cmd_end = cmd_offset
+            .checked_add(cmdsize)
+            .ok_or_else(|| ParseError::Malformed("load command size overflow".to_string()))?;
 
-        if cmdsize < 8 || cmd_offset + cmdsize > slice_bytes.len() {
+        if cmdsize < 8 || cmd_end > slice_bytes.len() {
             return Err(ParseError::OutOfBounds {
                 what: "load command payload",
                 offset: (slice_offset + cmd_offset) as u64,
@@ -209,7 +216,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
             .into());
         }
 
-        let cmd_payload = &slice_bytes[cmd_offset..cmd_offset + cmdsize];
+        let cmd_payload = &slice_bytes[cmd_offset..cmd_end];
 
         match cmd {
             LC_SEGMENT_64 => {
@@ -268,22 +275,18 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
                         let s_size = read_u64(cmd_payload, sect_offset + 40, is_little_endian)?;
                         let s_off =
                             read_u32(cmd_payload, sect_offset + 48, is_little_endian)? as u64;
-                        let s_align =
-                            1u64 << read_u32(cmd_payload, sect_offset + 52, is_little_endian)?;
+                        let s_align = section_alignment(read_u32(
+                            cmd_payload,
+                            sect_offset + 52,
+                            is_little_endian,
+                        )?)?;
                         let _s_reloff =
                             read_u32(cmd_payload, sect_offset + 56, is_little_endian)? as u64;
                         let s_nreloc = read_u32(cmd_payload, sect_offset + 60, is_little_endian)?;
                         let s_flags = read_u32(cmd_payload, sect_offset + 64, is_little_endian)?;
 
                         let full_sect_name = format!("{s_seg_name},{sect_name}");
-                        let sect_entropy =
-                            if s_off + s_size <= slice_bytes.len() as u64 && s_size > 0 {
-                                let sect_slice =
-                                    &slice_bytes[s_off as usize..(s_off + s_size) as usize];
-                                Some(hash::calculate_entropy(sect_slice))
-                            } else {
-                                None
-                            };
+                        let sect_entropy = section_entropy(slice_bytes, s_off, s_size);
 
                         let s_idx = sections.len() as u16;
                         sections.push(Section {
@@ -362,22 +365,18 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
                             read_u32(cmd_payload, sect_offset + 36, is_little_endian)? as u64;
                         let s_off =
                             read_u32(cmd_payload, sect_offset + 40, is_little_endian)? as u64;
-                        let s_align =
-                            1u64 << read_u32(cmd_payload, sect_offset + 44, is_little_endian)?;
+                        let s_align = section_alignment(read_u32(
+                            cmd_payload,
+                            sect_offset + 44,
+                            is_little_endian,
+                        )?)?;
                         let _s_reloff =
                             read_u32(cmd_payload, sect_offset + 48, is_little_endian)? as u64;
                         let s_nreloc = read_u32(cmd_payload, sect_offset + 52, is_little_endian)?;
                         let s_flags = read_u32(cmd_payload, sect_offset + 56, is_little_endian)?;
 
                         let full_sect_name = format!("{s_seg_name},{sect_name}");
-                        let sect_entropy =
-                            if s_off + s_size <= slice_bytes.len() as u64 && s_size > 0 {
-                                let sect_slice =
-                                    &slice_bytes[s_off as usize..(s_off + s_size) as usize];
-                                Some(hash::calculate_entropy(sect_slice))
-                            } else {
-                                None
-                            };
+                        let sect_entropy = section_entropy(slice_bytes, s_off, s_size);
 
                         let s_idx = sections.len() as u16;
                         sections.push(Section {
@@ -490,7 +489,9 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
             LC_MAIN => {
                 if cmd_payload.len() >= 24 {
                     let entryoff = read_u64(cmd_payload, 8, is_little_endian)?;
-                    let full_ep = text_vmaddr.map(|t| t + entryoff).unwrap_or(entryoff);
+                    let full_ep = text_vmaddr
+                        .and_then(|text| text.checked_add(entryoff))
+                        .unwrap_or(entryoff);
                     entry_point = Some(full_ep);
                 }
             }
@@ -612,6 +613,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
             }
             LC_SYMTAB => {
                 if cmd_payload.len() >= 24 {
+                    symbol_table_present = true;
                     let symoff = read_u32(cmd_payload, 8, is_little_endian)? as usize;
                     let nsyms = read_u32(cmd_payload, 12, is_little_endian)? as usize;
                     let stroff = read_u32(cmd_payload, 16, is_little_endian)? as usize;
@@ -657,28 +659,30 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
             _ => {}
         }
 
-        cmd_offset += cmdsize;
+        cmd_offset = cmd_end;
     }
 
     // Security Mitigations (checksec for Mach-O)
-    let is_dylib = file_type_raw == MH_DYLIB;
     let has_pie_flag = flags & MH_PIE != 0;
-    let pie = if is_dylib {
-        PieStatus::Dso
-    } else if has_pie_flag {
-        PieStatus::Pie
-    } else {
-        PieStatus::NoPie
+    let pie = match file_type_raw {
+        MH_DYLIB => PieStatus::Dso,
+        MH_EXECUTE if has_pie_flag => PieStatus::Pie,
+        MH_EXECUTE => PieStatus::NoPie,
+        _ => PieStatus::Unknown,
     };
 
-    let stack_canary = if has_stack_canary {
+    let stack_canary = if !symbol_table_present {
+        Hardening::Unknown
+    } else if has_stack_canary {
         Hardening::Enabled
     } else {
         Hardening::Disabled
     };
 
     let allow_stack_exec = flags & MH_ALLOW_STACK_EXECUTION != 0;
-    let nx = if allow_stack_exec || rwx_segments > 0 {
+    let nx = if segments.is_empty() {
+        Hardening::Unknown
+    } else if allow_stack_exec || rwx_segments > 0 {
         Hardening::Disabled
     } else {
         Hardening::Enabled
@@ -692,7 +696,9 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
         Relro::Unknown
     };
 
-    let fortify = if !fortified_functions.is_empty() {
+    let fortify = if !symbol_table_present {
+        Hardening::Unknown
+    } else if !fortified_functions.is_empty() {
         Hardening::Enabled
     } else {
         Hardening::Disabled
@@ -800,9 +806,12 @@ fn extract_fat_slice<'a>(
         let cpusubtype = read_u32(bytes, entry_offset + 4, is_little_endian)?;
 
         let (slice_offset, slice_size) = if is_64_bit {
-            let off = read_u64(bytes, entry_offset + 8, is_little_endian)? as usize;
-            let sz = read_u64(bytes, entry_offset + 16, is_little_endian)? as usize;
-            (off, sz)
+            let off = usize::try_from(read_u64(bytes, entry_offset + 8, is_little_endian)?).ok();
+            let sz = usize::try_from(read_u64(bytes, entry_offset + 16, is_little_endian)?).ok();
+            match (off, sz) {
+                (Some(off), Some(sz)) => (off, sz),
+                _ => continue,
+            }
         } else {
             let off = read_u32(bytes, entry_offset + 8, is_little_endian)? as usize;
             let sz = read_u32(bytes, entry_offset + 12, is_little_endian)? as usize;
@@ -812,7 +821,9 @@ fn extract_fat_slice<'a>(
         let arch_label = format_cpu_arch(cputype, cpusubtype);
         arch_names.push(arch_label);
 
-        if slice_offset + slice_size <= bytes.len() {
+        if let Some(slice_end) = slice_offset.checked_add(slice_size)
+            && slice_end <= bytes.len()
+        {
             // Prioritize ARM64E (rank 4), ARM64 (rank 3), x86_64 (rank 2), other 64-bit (rank 1)
             let rank = if cputype == CPU_TYPE_ARM64 && cpusubtype == CPU_SUBTYPE_ARM64E {
                 4
@@ -826,10 +837,7 @@ fn extract_fat_slice<'a>(
 
             if rank > chosen_rank || chosen_slice.is_none() {
                 chosen_rank = rank;
-                chosen_slice = Some((
-                    &bytes[slice_offset..slice_offset + slice_size],
-                    slice_offset,
-                ));
+                chosen_slice = Some((&bytes[slice_offset..slice_end], slice_offset));
             }
         }
     }
@@ -857,11 +865,17 @@ fn parse_symtab(
     let entry_size = if is_64_bit { 16 } else { 12 };
     let total_syms_len = nsyms.saturating_mul(entry_size);
 
-    if symoff + total_syms_len > bytes.len() || stroff + strsize > bytes.len() {
+    let Some(sym_end) = symoff.checked_add(total_syms_len) else {
+        return Ok(());
+    };
+    let Some(str_end) = stroff.checked_add(strsize) else {
+        return Ok(());
+    };
+    if sym_end > bytes.len() || str_end > bytes.len() {
         return Ok(()); // Lenient for truncated debug symbols
     }
 
-    let string_table = &bytes[stroff..stroff + strsize];
+    let string_table = &bytes[stroff..str_end];
     let limit = nsyms.min(MAX_SYMBOLS);
 
     for i in 0..limit {
@@ -936,7 +950,10 @@ fn parse_relocs(
     section_name: &'static str,
     relocations: &mut Vec<Relocation>,
 ) -> Result<(), ParseError> {
-    if reloff + nreloc.saturating_mul(8) > bytes.len() {
+    let Some(rel_end) = reloff.checked_add(nreloc.saturating_mul(8)) else {
+        return Ok(());
+    };
+    if rel_end > bytes.len() {
         return Ok(());
     }
 
@@ -1073,7 +1090,14 @@ fn decode_flags(flags: u32) -> Vec<String> {
 }
 
 fn read_u32(bytes: &[u8], offset: usize, is_le: bool) -> Result<u32, ParseError> {
-    if offset + 4 > bytes.len() {
+    let Some(end) = offset.checked_add(4) else {
+        return Err(ParseError::OutOfBounds {
+            what: "u32 field",
+            offset: offset as u64,
+            size: 4,
+        });
+    };
+    if end > bytes.len() {
         return Err(ParseError::OutOfBounds {
             what: "u32 field",
             offset: offset as u64,
@@ -1094,7 +1118,14 @@ fn read_u32(bytes: &[u8], offset: usize, is_le: bool) -> Result<u32, ParseError>
 }
 
 fn read_u64(bytes: &[u8], offset: usize, is_le: bool) -> Result<u64, ParseError> {
-    if offset + 8 > bytes.len() {
+    let Some(end) = offset.checked_add(8) else {
+        return Err(ParseError::OutOfBounds {
+            what: "u64 field",
+            offset: offset as u64,
+            size: 8,
+        });
+    };
+    if end > bytes.len() {
         return Err(ParseError::OutOfBounds {
             what: "u64 field",
             offset: offset as u64,
@@ -1120,19 +1151,41 @@ fn read_u64(bytes: &[u8], offset: usize, is_le: bool) -> Result<u64, ParseError>
 
 fn read_fixed_str(slice: &[u8]) -> String {
     let nul_pos = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-    String::from_utf8_lossy(&slice[..nul_pos])
-        .trim()
-        .to_string()
+    let value = String::from_utf8_lossy(&slice[..nul_pos]);
+    let value = value.trim();
+    text::escape_bytes(value.as_bytes())
 }
 
 fn read_cstring(bytes: &[u8], offset: usize, max_len: usize) -> Option<String> {
     if offset >= bytes.len() {
         return None;
     }
-    let end = (offset + max_len).min(bytes.len());
+    let end = offset
+        .checked_add(max_len)
+        .unwrap_or(bytes.len())
+        .min(bytes.len());
     let slice = &bytes[offset..end];
     let nul_pos = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
     Some(String::from_utf8_lossy(&slice[..nul_pos]).to_string())
+}
+
+fn section_alignment(power: u32) -> Result<u64, ParseError> {
+    1_u64
+        .checked_shl(power)
+        .ok_or_else(|| ParseError::InvalidHeader {
+            what: "Mach-O section alignment",
+            detail: format!("alignment exponent {power} is too large"),
+        })
+}
+
+fn section_entropy(bytes: &[u8], offset: u64, size: u64) -> Option<f64> {
+    if size == 0 {
+        return None;
+    }
+    let end = offset.checked_add(size)?;
+    let start = usize::try_from(offset).ok()?;
+    let end = usize::try_from(end).ok()?;
+    bytes.get(start..end).map(hash::calculate_entropy)
 }
 
 #[cfg(test)]
@@ -1242,6 +1295,75 @@ mod tests {
         let binary = parse(&bytes, 512).expect("valid Mach-O binary");
         assert_eq!(binary.mitigations.rwx_segments, 1);
         assert_eq!(binary.mitigations.nx, Hardening::Disabled);
+    }
+
+    #[test]
+    fn escapes_control_bytes_in_segment_and_section_names() {
+        let mut bytes = vec![0u8; 512];
+        bytes[0..4].copy_from_slice(&MH_CIGAM_64.to_be_bytes());
+        bytes[4..8].copy_from_slice(&CPU_TYPE_X86_64.to_le_bytes());
+        bytes[12..16].copy_from_slice(&MH_EXECUTE.to_le_bytes());
+        bytes[16..20].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&152_u32.to_le_bytes());
+
+        let command = 32;
+        bytes[command..command + 4].copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
+        bytes[command + 4..command + 8].copy_from_slice(&152_u32.to_le_bytes());
+        bytes[command + 8..command + 14].copy_from_slice(b"__TEXT");
+        bytes[command + 64..command + 68].copy_from_slice(&1_u32.to_le_bytes());
+
+        let section = command + 72;
+        bytes[section..section + 8].copy_from_slice(b"bad\x1bname");
+        bytes[section + 16..section + 22].copy_from_slice(b"__TEXT");
+        bytes[section + 40..section + 48].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[section + 48..section + 52].copy_from_slice(&500_u32.to_le_bytes());
+        bytes[500] = 0x41;
+
+        let binary = parse(&bytes, bytes.len() as u64).expect("valid Mach-O binary");
+        assert_eq!(binary.sections[0].name, "__TEXT,bad\\x1Bname");
+    }
+
+    #[test]
+    fn rejects_an_unrepresentable_macho_section_alignment() {
+        let mut bytes = vec![0u8; 256];
+        bytes[0..4].copy_from_slice(&MH_CIGAM_64.to_be_bytes());
+        bytes[4..8].copy_from_slice(&CPU_TYPE_X86_64.to_le_bytes());
+        bytes[12..16].copy_from_slice(&MH_EXECUTE.to_le_bytes());
+        bytes[16..20].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&152_u32.to_le_bytes());
+
+        let command = 32;
+        bytes[command..command + 4].copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
+        bytes[command + 4..command + 8].copy_from_slice(&152_u32.to_le_bytes());
+        bytes[command + 64..command + 68].copy_from_slice(&1_u32.to_le_bytes());
+        let section = command + 72;
+        bytes[section + 52..section + 56].copy_from_slice(&64_u32.to_le_bytes());
+
+        assert!(matches!(
+            parse(&bytes, bytes.len() as u64),
+            Err(AppError::Parse(ParseError::InvalidHeader { .. }))
+        ));
+    }
+
+    #[test]
+    fn tolerates_overflowing_macho_section_extent() {
+        let mut bytes = vec![0u8; 256];
+        bytes[0..4].copy_from_slice(&MH_CIGAM_64.to_be_bytes());
+        bytes[4..8].copy_from_slice(&CPU_TYPE_X86_64.to_le_bytes());
+        bytes[12..16].copy_from_slice(&MH_EXECUTE.to_le_bytes());
+        bytes[16..20].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&152_u32.to_le_bytes());
+
+        let command = 32;
+        bytes[command..command + 4].copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
+        bytes[command + 4..command + 8].copy_from_slice(&152_u32.to_le_bytes());
+        bytes[command + 64..command + 68].copy_from_slice(&1_u32.to_le_bytes());
+        let section = command + 72;
+        bytes[section + 40..section + 48].copy_from_slice(&u64::MAX.to_le_bytes());
+        bytes[section + 48..section + 52].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let binary = parse(&bytes, bytes.len() as u64).expect("malformed section is reportable");
+        assert_eq!(binary.sections[0].entropy, None);
     }
 
     #[test]

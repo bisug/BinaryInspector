@@ -281,11 +281,11 @@ pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
             .strings
             .iter()
             .filter(|s| {
-                if options.string_min_len > 0 && s.value.len() < options.string_min_len {
+                if options.string_min_len > 0 && s.length < options.string_min_len {
                     return false;
                 }
                 if let Some(cat) = &options.string_category
-                    && !s.category.as_str().eq_ignore_ascii_case(cat)
+                    && !category_matches(s, cat)
                 {
                     return false;
                 }
@@ -316,6 +316,13 @@ pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
     }
 
     output
+}
+
+fn category_matches(string: &crate::model::ExtractedString, filter: &str) -> bool {
+    string.category.as_str().eq_ignore_ascii_case(filter)
+        || (string.category == crate::model::StringCategory::FilePath
+            && (filter.eq_ignore_ascii_case("file-path")
+                || filter.eq_ignore_ascii_case("filepath")))
 }
 
 fn format_mitigations(output: &mut String, mit: &SecurityMitigations) {
@@ -401,4 +408,40 @@ fn segment_flags(flags: u32) -> String {
         output.push('-');
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReportOptions, report_human};
+    use crate::model::StringCategory;
+
+    #[test]
+    fn string_filters_use_character_length_and_documented_path_alias() {
+        let mut bytes = vec![0_u8; 64];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes.extend_from_slice(b"C:\\tmpx\0");
+
+        let binary = crate::inspect_bytes(&bytes, bytes.len() as u64)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            binary
+                .strings
+                .iter()
+                .any(|string| string.category == StringCategory::FilePath && string.length == 7)
+        );
+
+        let output = report_human(
+            &binary,
+            ReportOptions {
+                strings: true,
+                string_min_len: 7,
+                string_category: Some("file-path".to_string()),
+                ..ReportOptions::default()
+            },
+        );
+        assert!(output.contains("C:\\x5Ctmpx"));
+    }
 }

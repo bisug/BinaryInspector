@@ -159,6 +159,8 @@ fn test_inspect_bytes_pe32_plus_lifecycle() {
     assert_eq!(pe.entry_point, 0x1000);
     assert_eq!(binary.mitigations.pie, PieStatus::Pie);
     assert_eq!(binary.mitigations.nx, Hardening::Enabled);
+    assert_eq!(binary.mitigations.stack_canary, Hardening::Unknown);
+    assert_eq!(binary.mitigations.fortify, Hardening::Unknown);
 
     let json = report::report_json(&binary).expect("JSON serialization failed");
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("Invalid JSON emitted");
@@ -177,6 +179,7 @@ fn test_inspect_bytes_macho64_lifecycle() {
     assert!(macho.is_64_bit);
     assert_eq!(macho.cpu_arch, "x86_64");
     assert_eq!(binary.mitigations.pie, PieStatus::Pie);
+    assert_eq!(binary.mitigations.nx, Hardening::Unknown);
 
     let json = report::report_json(&binary).expect("JSON serialization failed");
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("Invalid JSON emitted");

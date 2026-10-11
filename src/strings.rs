@@ -13,18 +13,22 @@ use crate::{
 pub const MAX_STRINGS_LIMIT: usize = 10_000;
 /// Default minimum string length.
 pub const DEFAULT_MIN_LENGTH: usize = 4;
+/// Maximum length of one extracted string.
+pub const MAX_STRING_LENGTH: usize = 4 * 1024;
+const MAX_EXTRACTED_STRING_BYTES: usize = 4 * 1024 * 1024;
 
 /// Extracts printable ASCII and UTF-16LE strings from a binary byte buffer.
 pub fn extract(bytes: &[u8], sections: &[Section], min_len: usize) -> Vec<ExtractedString> {
     let min_len = min_len.max(3);
     let mut results = Vec::new();
+    let mut extracted_bytes = 0;
 
     // 1. ASCII / UTF-8 extraction pass
-    extract_ascii(bytes, sections, min_len, &mut results);
+    extract_ascii(bytes, sections, min_len, &mut results, &mut extracted_bytes);
 
     // 2. UTF-16LE extraction pass (if capacity permits)
     if results.len() < MAX_STRINGS_LIMIT {
-        extract_utf16le(bytes, sections, min_len, &mut results);
+        extract_utf16le(bytes, sections, min_len, &mut results, &mut extracted_bytes);
     }
 
     // Sort by file offset
@@ -41,6 +45,7 @@ fn extract_ascii(
     sections: &[Section],
     min_len: usize,
     results: &mut Vec<ExtractedString>,
+    extracted_bytes: &mut usize,
 ) {
     let mut start = None;
 
@@ -52,7 +57,15 @@ fn extract_ascii(
         } else if let Some(s) = start {
             let len = i - s;
             if len >= min_len {
-                record_string(bytes, s, len, StringEncoding::Ascii, sections, results);
+                record_string(
+                    bytes,
+                    s,
+                    len,
+                    StringEncoding::Ascii,
+                    sections,
+                    results,
+                    extracted_bytes,
+                );
                 if results.len() >= MAX_STRINGS_LIMIT {
                     return;
                 }
@@ -64,7 +77,15 @@ fn extract_ascii(
     if let Some(s) = start {
         let len = bytes.len() - s;
         if len >= min_len {
-            record_string(bytes, s, len, StringEncoding::Ascii, sections, results);
+            record_string(
+                bytes,
+                s,
+                len,
+                StringEncoding::Ascii,
+                sections,
+                results,
+                extracted_bytes,
+            );
         }
     }
 }
@@ -74,6 +95,7 @@ fn extract_utf16le(
     sections: &[Section],
     min_len: usize,
     results: &mut Vec<ExtractedString>,
+    extracted_bytes: &mut usize,
 ) {
     let mut start = None;
     let mut i = 0;
@@ -90,35 +112,17 @@ fn extract_utf16le(
             i += 2;
         } else {
             if let Some(s) = start {
-                let char_len = (i - s) / 2;
-                if char_len >= min_len {
-                    // Collect chars
-                    let mut u16_chars = Vec::with_capacity(char_len);
-                    for chunk in bytes[s..i].as_chunks::<2>().0 {
-                        u16_chars.push(u16::from_le_bytes(*chunk));
-                    }
-                    if let Ok(decoded) = String::from_utf16(&u16_chars) {
-                        let cat = classify_string(&decoded);
-                        let sec = find_section(s as u64, sections);
-                        let escaped = text::escape_bytes(decoded.as_bytes());
-
-                        results.push(ExtractedString {
-                            offset: s as u64,
-                            length: char_len,
-                            encoding: StringEncoding::Utf16Le,
-                            category: cat,
-                            section: sec,
-                            value: escaped,
-                        });
-                        if results.len() >= MAX_STRINGS_LIMIT {
-                            return;
-                        }
-                    }
+                if !record_utf16le(bytes, s, i, sections, min_len, results, extracted_bytes) {
+                    return;
                 }
                 start = None;
             }
             i += 1;
         }
+    }
+
+    if let Some(s) = start {
+        record_utf16le(bytes, s, i, sections, min_len, results, extracted_bytes);
     }
 }
 
@@ -129,12 +133,20 @@ fn record_string(
     encoding: StringEncoding,
     sections: &[Section],
     results: &mut Vec<ExtractedString>,
+    extracted_bytes: &mut usize,
 ) {
+    if len > MAX_STRING_LENGTH {
+        return;
+    }
     let slice = &bytes[start..start + len];
     let val_str = String::from_utf8_lossy(slice);
     let cat = classify_string(&val_str);
     let sec = find_section(start as u64, sections);
     let escaped = text::escape_bytes(slice);
+    if extracted_bytes.saturating_add(escaped.len()) > MAX_EXTRACTED_STRING_BYTES {
+        return;
+    }
+    *extracted_bytes += escaped.len();
 
     results.push(ExtractedString {
         offset: start as u64,
@@ -144,6 +156,49 @@ fn record_string(
         section: sec,
         value: escaped,
     });
+}
+
+fn record_utf16le(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    sections: &[Section],
+    min_len: usize,
+    results: &mut Vec<ExtractedString>,
+    extracted_bytes: &mut usize,
+) -> bool {
+    let char_len = (end - start) / 2;
+    if char_len < min_len {
+        return true;
+    }
+    if char_len > MAX_STRING_LENGTH {
+        return true;
+    }
+
+    let mut u16_chars = Vec::with_capacity(char_len);
+    for chunk in bytes[start..start + char_len * 2].as_chunks::<2>().0 {
+        u16_chars.push(u16::from_le_bytes(*chunk));
+    }
+    let Ok(decoded) = String::from_utf16(&u16_chars) else {
+        return true;
+    };
+    let cat = classify_string(&decoded);
+    let sec = find_section(start as u64, sections);
+    let escaped = text::escape_bytes(decoded.as_bytes());
+    if extracted_bytes.saturating_add(escaped.len()) > MAX_EXTRACTED_STRING_BYTES {
+        return true;
+    }
+    *extracted_bytes += escaped.len();
+
+    results.push(ExtractedString {
+        offset: start as u64,
+        length: char_len,
+        encoding: StringEncoding::Utf16Le,
+        category: cat,
+        section: sec,
+        value: escaped,
+    });
+    results.len() < MAX_STRINGS_LIMIT
 }
 
 fn is_printable_ascii(b: u8) -> bool {
@@ -348,6 +403,29 @@ mod tests {
             .find(|s| s.encoding == StringEncoding::Utf16Le);
         assert!(wide_str.is_some());
         assert_eq!(wide_str.unwrap().value, "WindowsSystem32");
+    }
+
+    #[test]
+    fn extracts_a_utf16le_string_at_end_of_input() {
+        let mut payload = Vec::new();
+        for c in "TrailingWide".encode_utf16() {
+            payload.extend_from_slice(&c.to_le_bytes());
+        }
+
+        let strings = extract(&payload, &[], 4);
+        assert_eq!(
+            strings
+                .iter()
+                .find(|s| s.encoding == StringEncoding::Utf16Le)
+                .map(|s| s.value.as_str()),
+            Some("TrailingWide")
+        );
+    }
+
+    #[test]
+    fn bounds_extracted_string_memory() {
+        let payload = vec![b'A'; MAX_STRING_LENGTH + 1];
+        assert!(extract(&payload, &[], 3).is_empty());
     }
 
     #[test]

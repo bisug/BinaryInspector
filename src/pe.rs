@@ -39,7 +39,15 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
 
     // Offset to PE Header is at 0x3C in DOS header
     let pe_offset = read_u32_le(bytes, 0x3c)? as usize;
-    if pe_offset + 24 > bytes.len() {
+    let Some(pe_header_end) = pe_offset.checked_add(24) else {
+        return Err(ParseError::OutOfBounds {
+            what: "PE header signature",
+            offset: pe_offset as u64,
+            size: 24,
+        }
+        .into());
+    };
+    if pe_header_end > bytes.len() {
         return Err(ParseError::OutOfBounds {
             what: "PE header signature",
             offset: pe_offset as u64,
@@ -81,7 +89,15 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     let characteristics = read_u16_le(bytes, coff_offset + 18)?;
 
     let opt_offset = coff_offset + 20;
-    if opt_offset + size_of_optional_header > bytes.len() {
+    let Some(opt_end) = opt_offset.checked_add(size_of_optional_header) else {
+        return Err(ParseError::OutOfBounds {
+            what: "PE optional header",
+            offset: opt_offset as u64,
+            size: size_of_optional_header as u64,
+        }
+        .into());
+    };
+    if opt_end > bytes.len() {
         return Err(ParseError::OutOfBounds {
             what: "PE optional header",
             offset: opt_offset as u64,
@@ -114,8 +130,26 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     let mut rwx_sections_count = 0;
 
     for i in 0..number_of_sections {
-        let sec_offset = raw_sections_offset + i * 40;
-        if sec_offset + 40 > bytes.len() {
+        let Some(sec_offset) = i
+            .checked_mul(40)
+            .and_then(|delta| raw_sections_offset.checked_add(delta))
+        else {
+            return Err(ParseError::OutOfBounds {
+                what: "PE section header",
+                offset: raw_sections_offset as u64,
+                size: 40,
+            }
+            .into());
+        };
+        let Some(sec_end) = sec_offset.checked_add(40) else {
+            return Err(ParseError::OutOfBounds {
+                what: "PE section header",
+                offset: sec_offset as u64,
+                size: 40,
+            }
+            .into());
+        };
+        if sec_end > bytes.len() {
             return Err(ParseError::OutOfBounds {
                 what: "PE section header",
                 offset: sec_offset as u64,
@@ -206,6 +240,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     let mut symbols = Vec::new();
     let mut fortified_functions = HashSet::new();
     let mut has_canary = false;
+    let mut has_import_symbols = false;
 
     // Check Data Directories:
     // 0 = Export Directory
@@ -215,15 +250,18 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
         && import_dir.rva > 0
         && import_dir.size > 0
     {
+        let symbol_count_before = symbols.len();
         parse_imports(
             bytes,
             import_dir.rva,
+            pe_header.is_pe32_plus,
             &raw_sections,
             &mut dynamic,
             &mut symbols,
             &mut has_canary,
             &mut fortified_functions,
         )?;
+        has_import_symbols = symbols.len() > symbol_count_before;
     }
 
     if let Some(export_dir) = pe_header.data_directories.first()
@@ -273,13 +311,17 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
         Hardening::Disabled
     };
 
-    let stack_canary = if has_canary {
+    let stack_canary = if !has_import_symbols {
+        Hardening::Unknown
+    } else if has_canary {
         Hardening::Enabled
     } else {
         Hardening::Disabled
     };
 
-    let fortify = if !fortified_functions.is_empty() {
+    let fortify = if !has_import_symbols {
+        Hardening::Unknown
+    } else if !fortified_functions.is_empty() {
         Hardening::Enabled
     } else {
         Hardening::Disabled
@@ -464,8 +506,16 @@ fn parse_optional_header(
     let mut data_directories = Vec::new();
     let count = (num_dirs as usize).min(dir_names.len());
     for (i, name) in dir_names.iter().enumerate().take(count) {
-        let entry_offset = dirs_offset + i * 8;
-        if entry_offset + 8 <= bytes.len() {
+        let Some(entry_offset) = i
+            .checked_mul(8)
+            .and_then(|delta| dirs_offset.checked_add(delta))
+        else {
+            break;
+        };
+        if entry_offset
+            .checked_add(8)
+            .is_some_and(|end| end <= bytes.len())
+        {
             let rva = read_u32_le(bytes, entry_offset)?;
             let size = read_u32_le(bytes, entry_offset + 4)?;
             data_directories.push(PeDataDirectory {
@@ -506,13 +556,17 @@ fn parse_optional_header(
         data_directories,
     };
 
-    let raw_sections_offset = opt_offset + opt_size;
+    let raw_sections_offset = opt_offset
+        .checked_add(opt_size)
+        .ok_or(ParseError::IntegerOverflow("PE section table offset"))?;
     Ok((pe_header, raw_sections_offset))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_imports(
     bytes: &[u8],
     import_rva: u32,
+    is_pe32_plus: bool,
     sections: &[RawPeSection],
     dynamic: &mut DynamicInfo,
     symbols: &mut Vec<Symbol>,
@@ -523,9 +577,19 @@ fn parse_imports(
         Some(offset) => offset,
         None => return Ok(()),
     };
+    let thunk_size = if is_pe32_plus { 8 } else { 4 };
+    let ordinal_flag = if is_pe32_plus {
+        1_u64 << 63
+    } else {
+        1_u64 << 31
+    };
 
     let mut count = 0;
-    while descriptor_offset + 20 <= bytes.len() && count < MAX_IMPORTS {
+    while descriptor_offset
+        .checked_add(20)
+        .is_some_and(|end| end <= bytes.len())
+        && count < MAX_IMPORTS
+    {
         let original_first_thunk = read_u32_le(bytes, descriptor_offset)?;
         let name_rva = read_u32_le(bytes, descriptor_offset + 12)?;
         let first_thunk = read_u32_le(bytes, descriptor_offset + 16)?;
@@ -547,19 +611,32 @@ fn parse_imports(
             };
 
             if let Some(mut thunk_offset) = rva_to_file_offset(thunk_rva, sections) {
-                while thunk_offset + 8 <= bytes.len() && symbols.len() < MAX_IMPORTS {
-                    let val = read_u64_le(bytes, thunk_offset)?;
+                while thunk_offset
+                    .checked_add(thunk_size)
+                    .is_some_and(|end| end <= bytes.len())
+                    && symbols.len() < MAX_IMPORTS
+                {
+                    let val = if is_pe32_plus {
+                        read_u64_le(bytes, thunk_offset)?
+                    } else {
+                        u64::from(read_u32_le(bytes, thunk_offset)?)
+                    };
                     if val == 0 {
                         break;
                     }
 
                     // Highest bit indicates ordinal import, else RVA to hint/name
-                    let is_ordinal = val & 0x8000_0000_0000_0000 != 0;
+                    let is_ordinal = val & ordinal_flag != 0;
                     if !is_ordinal {
-                        let name_entry_rva = (val & 0x7fff_ffff) as u32;
+                        let Some(name_entry_rva) = u32::try_from(val & !ordinal_flag).ok() else {
+                            thunk_offset += thunk_size;
+                            continue;
+                        };
                         if let Some(entry_offset) = rva_to_file_offset(name_entry_rva, sections) {
                             // Skip 2 bytes hint
-                            if let Some(func_name) = read_cstring(bytes, entry_offset + 2, 256) {
+                            if let Some(name_offset) = entry_offset.checked_add(2)
+                                && let Some(func_name) = read_cstring(bytes, name_offset, 256)
+                            {
                                 if func_name.contains("__security_check_cookie")
                                     || func_name.contains("__security_cookie")
                                 {
@@ -585,7 +662,7 @@ fn parse_imports(
                             }
                         }
                     }
-                    thunk_offset += 8;
+                    thunk_offset += thunk_size;
                 }
             }
         }
@@ -609,7 +686,10 @@ fn parse_exports(
         None => return Ok(()),
     };
 
-    if export_offset + 40 > bytes.len() {
+    if export_offset
+        .checked_add(40)
+        .is_none_or(|end| end > bytes.len())
+    {
         return Ok(());
     }
 
@@ -627,8 +707,16 @@ fn parse_exports(
     if let Some(names_table_offset) = rva_to_file_offset(names_rva, sections) {
         let count = num_names.min(num_functions).min(MAX_EXPORTS);
         for i in 0..count {
-            let entry_offset = names_table_offset + i * 4;
-            if entry_offset + 4 <= bytes.len() {
+            let Some(entry_offset) = i
+                .checked_mul(4)
+                .and_then(|delta| names_table_offset.checked_add(delta))
+            else {
+                break;
+            };
+            if entry_offset
+                .checked_add(4)
+                .is_some_and(|end| end <= bytes.len())
+            {
                 let func_name_rva = read_u32_le(bytes, entry_offset)?;
                 if let Some(name_offset) = rva_to_file_offset(func_name_rva, sections)
                     && let Some(func_name) = read_cstring(bytes, name_offset, 256)
@@ -674,7 +762,10 @@ fn parse_base_relocations(
         let page_rva = read_u32_le(bytes, cur)? as u64;
         let block_size = read_u32_le(bytes, cur + 4)? as usize;
 
-        if block_size < 8 || cur + block_size > end {
+        let Some(block_end) = cur.checked_add(block_size) else {
+            break;
+        };
+        if block_size < 8 || block_end > end {
             break;
         }
 
@@ -697,7 +788,7 @@ fn parse_base_relocations(
             }
         }
 
-        cur += block_size;
+        cur = block_end;
     }
 
     Ok(())
@@ -805,7 +896,10 @@ fn read_u64_le(bytes: &[u8], offset: usize) -> Result<u64, ParseError> {
 
 fn read_cstring(bytes: &[u8], offset: usize, max_len: usize) -> Option<String> {
     let mut end = offset;
-    let limit = (offset + max_len).min(bytes.len());
+    let limit = offset
+        .checked_add(max_len)
+        .unwrap_or(bytes.len())
+        .min(bytes.len());
     while end < limit && bytes[end] != 0 {
         end += 1;
     }
@@ -1027,6 +1121,54 @@ mod tests {
             binary.symbols[0].name,
             "VCRUNTIME140!__security_check_cookie"
         );
+    }
+
+    #[test]
+    fn parses_all_pe32_import_thunks() {
+        let mut bytes = vec![0_u8; 2048];
+        bytes[0..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+
+        let pe = 0x80;
+        bytes[pe..pe + 4].copy_from_slice(b"PE\0\0");
+        let coff = pe + 4;
+        bytes[coff..coff + 2].copy_from_slice(&0x014c_u16.to_le_bytes());
+        bytes[coff + 2..coff + 4].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[coff + 16..coff + 18].copy_from_slice(&224_u16.to_le_bytes());
+
+        let opt = coff + 20;
+        bytes[opt..opt + 2].copy_from_slice(&0x10b_u16.to_le_bytes());
+        bytes[opt + 92..opt + 96].copy_from_slice(&16_u32.to_le_bytes());
+        let import_dir = opt + 96 + 8;
+        bytes[import_dir..import_dir + 4].copy_from_slice(&0x1000_u32.to_le_bytes());
+        bytes[import_dir + 4..import_dir + 8].copy_from_slice(&40_u32.to_le_bytes());
+
+        let section = opt + 224;
+        bytes[section..section + 6].copy_from_slice(b".idata");
+        bytes[section + 8..section + 12].copy_from_slice(&0x600_u32.to_le_bytes());
+        bytes[section + 12..section + 16].copy_from_slice(&0x1000_u32.to_le_bytes());
+        bytes[section + 16..section + 20].copy_from_slice(&0x600_u32.to_le_bytes());
+        bytes[section + 20..section + 24].copy_from_slice(&0x400_u32.to_le_bytes());
+
+        let descriptor = 0x400;
+        bytes[descriptor..descriptor + 4].copy_from_slice(&0x1040_u32.to_le_bytes());
+        bytes[descriptor + 12..descriptor + 16].copy_from_slice(&0x1060_u32.to_le_bytes());
+        bytes[descriptor + 16..descriptor + 20].copy_from_slice(&0x1040_u32.to_le_bytes());
+        bytes[0x460..0x46d].copy_from_slice(b"VCRUNTIME140\0");
+
+        let thunks = 0x440;
+        bytes[thunks..thunks + 4].copy_from_slice(&0x1080_u32.to_le_bytes());
+        bytes[thunks + 4..thunks + 8].copy_from_slice(&0x10a0_u32.to_le_bytes());
+        let first_name = 0x480;
+        bytes[first_name + 2..first_name + 2 + 24].copy_from_slice(b"__security_check_cookie\0");
+        let second_name = 0x4a0;
+        bytes[second_name + 2..second_name + 2 + 7].copy_from_slice(b"memcpy\0");
+
+        let binary = parse(&bytes, bytes.len() as u64).expect("valid PE32 with imports");
+        assert_eq!(binary.dynamic.needed, vec!["VCRUNTIME140"]);
+        assert_eq!(binary.symbols.len(), 2);
+        assert!(binary.mitigations.stack_canary == Hardening::Enabled);
+        assert_eq!(binary.symbols[1].name, "VCRUNTIME140!memcpy");
     }
 
     #[test]

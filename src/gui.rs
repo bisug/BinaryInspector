@@ -370,6 +370,10 @@ struct InspectorApp {
 
 impl InspectorApp {
     fn inspect(&mut self, path: PathBuf) {
+        if matches!(&self.inspection, Inspection::Loading(_)) {
+            return;
+        }
+
         if !self.recent_files.contains(&path) {
             self.recent_files.insert(0, path.clone());
             if self.recent_files.len() > 8 {
@@ -390,6 +394,7 @@ impl InspectorApp {
         self.view_state.selected_symbol = None;
         self.view_state.selected_section = None;
         self.view_state.selected_segment = None;
+        self.view_state.selected_string = None;
     }
 
     fn reload_current(&mut self) {
@@ -571,7 +576,6 @@ impl InspectorApp {
         let mut choose_file = false;
         let mut reload_file = false;
         let mut unload_file = false;
-        let mut cancel_load = false;
         let mut export_json_req = false;
         let mut copy_json_req = false;
 
@@ -672,25 +676,28 @@ impl InspectorApp {
                     _ => {}
                 }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let open_btn = egui::Button::new(
-                        egui::RichText::new("📂 Open Binary (Ctrl+O)")
-                            .strong()
-                            .size(13.0)
-                            .color(egui::Color32::WHITE),
-                    )
-                    .fill(ThemeTokens::ACCENT_PRIMARY)
-                    .corner_radius(egui::CornerRadius::same(6));
+                if !matches!(&self.inspection, Inspection::Loading(_)) {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let open_btn = egui::Button::new(
+                            egui::RichText::new("📂 Open Binary (Ctrl+O)")
+                                .strong()
+                                .size(13.0)
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(ThemeTokens::ACCENT_PRIMARY)
+                        .corner_radius(egui::CornerRadius::same(6));
 
-                    if ui.add(open_btn).clicked() {
-                        choose_file = true;
-                    }
-                });
+                        if ui.add(open_btn).clicked() {
+                            choose_file = true;
+                        }
+                    });
+                }
             });
         });
 
         if choose_file {
             self.choose_file();
+            choose_file = false;
         }
         if reload_file {
             self.reload_current();
@@ -757,10 +764,6 @@ impl InspectorApp {
                                 .size(13.0)
                                 .color(ThemeTokens::TEXT_SECONDARY),
                             );
-                            ui.add_space(16.0);
-                            if ui.button("Cancel Inspection").clicked() {
-                                cancel_load = true;
-                            }
                         });
                     });
                 }
@@ -776,11 +779,6 @@ impl InspectorApp {
                 }
             },
         );
-
-        if cancel_load {
-            self.inspection = Inspection::Empty;
-            self.view_state.set_status("Inspection cancelled");
-        }
 
         // Bottom Status Bar
         let status_frame = egui::Frame::new()
