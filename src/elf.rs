@@ -93,6 +93,8 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
         sha256: sha256_hex(bytes),
     };
 
+    let strings = crate::strings::extract(bytes, &sections, crate::strings::DEFAULT_MIN_LENGTH);
+
     Ok(Binary {
         format: FileFormat::Elf,
         file: FileMetadata { size_bytes },
@@ -106,6 +108,7 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
         mitigations,
         notes,
         relocations,
+        strings,
         hashes,
     })
 }

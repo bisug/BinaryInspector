@@ -36,7 +36,8 @@ fn main() -> ExitCode {
         || cli.symbols
         || cli.mitigations
         || cli.notes
-        || cli.relocations;
+        || cli.relocations
+        || cli.strings;
     let all = cli.all || !any_selected;
 
     match inspect(&cli.file) {
@@ -49,6 +50,9 @@ fn main() -> ExitCode {
                 mitigations: all || cli.mitigations,
                 notes: all || cli.notes,
                 relocations: all || cli.relocations,
+                strings: all || cli.strings,
+                string_min_len: cli.string_min_len,
+                string_category: cli.string_category,
             };
             if cli.json {
                 match report::report_json(&binary) {

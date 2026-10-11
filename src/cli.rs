@@ -34,6 +34,15 @@ pub struct Cli {
     /// Include relocation entries.
     #[arg(short = 'r', long)]
     pub relocations: bool,
+    /// Include extracted strings and embedded artifacts.
+    #[arg(short = 't', long)]
+    pub strings: bool,
+    /// Minimum string length when filtering (default: 4).
+    #[arg(long, default_value = "4")]
+    pub string_min_len: usize,
+    /// Filter extracted strings by category (url, ip, file-path, crypto, email, general).
+    #[arg(long)]
+    pub string_category: Option<String>,
     /// Include every available category (the default).
     #[arg(short, long)]
     pub all: bool,
@@ -60,8 +69,25 @@ mod tests {
 
     #[test]
     fn accepts_extended_category_flags() {
-        let cli = Cli::try_parse_from(["binary-inspector", "fixture", "-smnr"])
+        let cli = Cli::try_parse_from(["binary-inspector", "fixture", "-smnrt"])
             .unwrap_or_else(|error| panic!("{error}"));
-        assert!(cli.symbols && cli.mitigations && cli.notes && cli.relocations);
+        assert!(cli.symbols && cli.mitigations && cli.notes && cli.relocations && cli.strings);
+    }
+
+    #[test]
+    fn accepts_string_filter_flags() {
+        let cli = Cli::try_parse_from([
+            "binary-inspector",
+            "fixture",
+            "--strings",
+            "--string-min-len",
+            "8",
+            "--string-category",
+            "url",
+        ])
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(cli.strings);
+        assert_eq!(cli.string_min_len, 8);
+        assert_eq!(cli.string_category.as_deref(), Some("url"));
     }
 }

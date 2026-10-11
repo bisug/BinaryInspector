@@ -732,6 +732,9 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
         sha256: hash::sha256_hex(bytes),
     };
 
+    let strings =
+        crate::strings::extract(slice_bytes, &sections, crate::strings::DEFAULT_MIN_LENGTH);
+
     Ok(Binary {
         format: FileFormat::MachO,
         file: FileMetadata {
@@ -747,6 +750,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
         mitigations,
         notes,
         relocations,
+        strings,
         hashes,
     })
 }

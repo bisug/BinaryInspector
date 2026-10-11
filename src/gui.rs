@@ -12,8 +12,9 @@ use binary_inspector::{
     error::AppError,
     inspect,
     model::{
-        Binary, ElfNote, Hardening, PieStatus, Relocation, Relro, Section, SecurityMitigations,
-        Segment, Symbol, SymbolBinding, SymbolTableKind, SymbolType,
+        Binary, ElfNote, ExtractedString, Hardening, PieStatus, Relocation, Relro, Section,
+        SecurityMitigations, Segment, StringCategory, StringEncoding, Symbol, SymbolBinding,
+        SymbolTableKind, SymbolType,
     },
     report,
 };
@@ -131,6 +132,7 @@ enum View {
     Dependencies,
     Notes,
     Relocations,
+    Strings,
 }
 
 impl View {
@@ -144,6 +146,7 @@ impl View {
             Self::Dependencies => "Dynamic & Deps",
             Self::Notes => "Notes & Build",
             Self::Relocations => "Relocations",
+            Self::Strings => "Strings & Secrets",
         }
     }
 
@@ -157,6 +160,7 @@ impl View {
             Self::Dependencies => "🔗",
             Self::Notes => "📝",
             Self::Relocations => "🎯",
+            Self::Strings => "🔤",
         }
     }
 
@@ -170,6 +174,7 @@ impl View {
             Self::Dependencies => "Alt+6",
             Self::Notes => "Alt+7",
             Self::Relocations => "Alt+8",
+            Self::Strings => "Alt+9",
         }
     }
 }
@@ -225,6 +230,37 @@ enum SegmentSort {
     Flags,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum StringCategoryFilter {
+    #[default]
+    All,
+    Url,
+    Ip,
+    FilePath,
+    Crypto,
+    Email,
+    General,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum StringEncodingFilter {
+    #[default]
+    All,
+    Ascii,
+    Utf16Le,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum StringSort {
+    #[default]
+    Offset,
+    Category,
+    Encoding,
+    Section,
+    Length,
+    Value,
+}
+
 #[derive(Default)]
 enum Inspection {
     #[default]
@@ -245,6 +281,7 @@ const DEFAULT_SECTION_COL_WIDTHS: [f32; 8] = [45.0, 160.0, 120.0, 80.0, 105.0, 8
 const DEFAULT_SEGMENT_COL_WIDTHS: [f32; 8] = [45.0, 140.0, 80.0, 95.0, 115.0, 95.0, 95.0, 80.0];
 const DEFAULT_SYMBOL_COL_WIDTHS: [f32; 8] = [50.0, 220.0, 85.0, 80.0, 75.0, 105.0, 75.0, 70.0];
 const DEFAULT_RELOC_COL_WIDTHS: [f32; 5] = [105.0, 65.0, 220.0, 120.0, 75.0];
+const DEFAULT_STRING_COL_WIDTHS: [f32; 6] = [95.0, 90.0, 75.0, 110.0, 60.0, 320.0];
 
 struct ViewState {
     view: View,
@@ -270,6 +307,14 @@ struct ViewState {
     selected_segment: Option<u16>,
     segment_detail_height: f32,
     focus_search: bool,
+    string_category_filter: StringCategoryFilter,
+    string_encoding_filter: StringEncodingFilter,
+    string_sort: StringSort,
+    string_sort_asc: bool,
+    selected_string: Option<usize>,
+    string_detail_height: f32,
+    string_col_widths: [f32; 6],
+    string_min_len: usize,
 }
 
 impl Default for ViewState {
@@ -298,6 +343,14 @@ impl Default for ViewState {
             selected_segment: None,
             segment_detail_height: 180.0,
             focus_search: false,
+            string_category_filter: StringCategoryFilter::All,
+            string_encoding_filter: StringEncodingFilter::All,
+            string_sort: StringSort::Offset,
+            string_sort_asc: true,
+            selected_string: None,
+            string_detail_height: 180.0,
+            string_col_widths: DEFAULT_STRING_COL_WIDTHS,
+            string_min_len: 4,
         }
     }
 }
@@ -454,6 +507,8 @@ impl eframe::App for InspectorApp {
                         Some(View::Notes)
                     } else if input.key_pressed(egui::Key::Num8) {
                         Some(View::Relocations)
+                    } else if input.key_pressed(egui::Key::Num9) {
+                        Some(View::Strings)
                     } else {
                         None
                     }
@@ -1240,6 +1295,12 @@ impl ViewState {
                         View::Relocations,
                         Some(binary.relocations.len()),
                     );
+                    nav_item(
+                        ui,
+                        &mut self.view,
+                        View::Strings,
+                        Some(binary.strings.len()),
+                    );
 
                     ui.add_space(16.0);
                     ui.separator();
@@ -1319,6 +1380,7 @@ impl ViewState {
                 View::Dependencies => self.render_dependencies(ui, binary),
                 View::Notes => self.render_notes(ui, &binary.notes),
                 View::Relocations => self.render_relocations(ui, &binary.relocations),
+                View::Strings => self.render_strings(ui, binary),
             });
         });
     }
@@ -1706,6 +1768,13 @@ impl ViewState {
                             ui.label(format!("{} relocation records", binary.relocations.len()));
                             if ui.button("Inspect Relocations (Alt+8)").clicked() {
                                 self.view = View::Relocations;
+                            }
+                            ui.end_row();
+
+                            ui.strong("Strings & Secrets");
+                            ui.label(format!("{} extracted strings", binary.strings.len()));
+                            if ui.button("Inspect Strings (Alt+9)").clicked() {
+                                self.view = View::Strings;
                             }
                             ui.end_row();
                         });
@@ -3574,6 +3643,566 @@ impl ViewState {
                 });
             }
         });
+    }
+
+    fn render_strings(&mut self, ui: &mut egui::Ui, binary: &Binary) {
+        let total_strings = binary.strings.len();
+
+        // 1. Top Header & Search Bar
+        ui.horizontal(|ui| {
+            ui.heading(
+                egui::RichText::new(format!("🔤 Strings & Secrets ({total_strings})"))
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
+            );
+
+            ui.add_space(14.0);
+            ui.label("🔍");
+            let search_edit = egui::TextEdit::singleline(&mut self.search_query)
+                .hint_text("Search strings, URLs, paths (Ctrl+F)…")
+                .desired_width(220.0);
+
+            let resp = ui.add(search_edit);
+            if self.focus_search {
+                resp.request_focus();
+                self.focus_search = false;
+            }
+
+            if !self.search_query.is_empty() && ui.small_button("✕").clicked() {
+                self.search_query.clear();
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("↺ Reset Widths").clicked() {
+                    self.string_col_widths = DEFAULT_STRING_COL_WIDTHS;
+                }
+            });
+        });
+
+        ui.add_space(6.0);
+
+        // 2. Filter Pills Row
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+
+            let url_cnt = binary
+                .strings
+                .iter()
+                .filter(|s| s.category == StringCategory::Url)
+                .count();
+            let ip_cnt = binary
+                .strings
+                .iter()
+                .filter(|s| s.category == StringCategory::Ip)
+                .count();
+            let path_cnt = binary
+                .strings
+                .iter()
+                .filter(|s| s.category == StringCategory::FilePath)
+                .count();
+            let crypto_cnt = binary
+                .strings
+                .iter()
+                .filter(|s| s.category == StringCategory::Crypto)
+                .count();
+            let email_cnt = binary
+                .strings
+                .iter()
+                .filter(|s| s.category == StringCategory::Email)
+                .count();
+            let gen_cnt = binary
+                .strings
+                .iter()
+                .filter(|s| s.category == StringCategory::General)
+                .count();
+
+            let filter_pill = |ui: &mut egui::Ui,
+                               curr: &mut StringCategoryFilter,
+                               target: StringCategoryFilter,
+                               label: &str| {
+                let is_sel = *curr == target;
+                if ui.selectable_label(is_sel, label).clicked() {
+                    *curr = target;
+                }
+            };
+
+            filter_pill(
+                ui,
+                &mut self.string_category_filter,
+                StringCategoryFilter::All,
+                &format!("All ({total_strings})"),
+            );
+            filter_pill(
+                ui,
+                &mut self.string_category_filter,
+                StringCategoryFilter::Url,
+                &format!("🌐 URLs ({url_cnt})"),
+            );
+            filter_pill(
+                ui,
+                &mut self.string_category_filter,
+                StringCategoryFilter::Ip,
+                &format!("📍 IPs ({ip_cnt})"),
+            );
+            filter_pill(
+                ui,
+                &mut self.string_category_filter,
+                StringCategoryFilter::FilePath,
+                &format!("📁 Paths ({path_cnt})"),
+            );
+            filter_pill(
+                ui,
+                &mut self.string_category_filter,
+                StringCategoryFilter::Crypto,
+                &format!("🔑 Secrets ({crypto_cnt})"),
+            );
+            filter_pill(
+                ui,
+                &mut self.string_category_filter,
+                StringCategoryFilter::Email,
+                &format!("✉️ Emails ({email_cnt})"),
+            );
+            filter_pill(
+                ui,
+                &mut self.string_category_filter,
+                StringCategoryFilter::General,
+                &format!("📄 General ({gen_cnt})"),
+            );
+
+            ui.separator();
+
+            let enc_pill = |ui: &mut egui::Ui,
+                            curr: &mut StringEncodingFilter,
+                            target: StringEncodingFilter,
+                            label: &str| {
+                let is_sel = *curr == target;
+                if ui.selectable_label(is_sel, label).clicked() {
+                    *curr = target;
+                }
+            };
+
+            enc_pill(
+                ui,
+                &mut self.string_encoding_filter,
+                StringEncodingFilter::All,
+                "All Encodings",
+            );
+            enc_pill(
+                ui,
+                &mut self.string_encoding_filter,
+                StringEncodingFilter::Ascii,
+                "ASCII",
+            );
+            enc_pill(
+                ui,
+                &mut self.string_encoding_filter,
+                StringEncodingFilter::Utf16Le,
+                "UTF-16LE",
+            );
+
+            ui.separator();
+
+            ui.label(
+                egui::RichText::new("Min Len:")
+                    .size(11.5)
+                    .color(ThemeTokens::TEXT_SECONDARY),
+            );
+            ui.add(egui::DragValue::new(&mut self.string_min_len).range(1..=128));
+        });
+
+        ui.add_space(4.0);
+
+        // 3. Filter and Sort
+        let q = self.search_query.to_lowercase();
+        let mut visible: Vec<(usize, &ExtractedString)> = binary
+            .strings
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                if s.value.len() < self.string_min_len {
+                    return false;
+                }
+                if !q.is_empty() {
+                    let in_val = s.value.to_lowercase().contains(&q);
+                    let in_sec = s
+                        .section
+                        .as_deref()
+                        .map(|sec| sec.to_lowercase().contains(&q))
+                        .unwrap_or(false);
+                    let in_cat = s.category.as_str().contains(&q);
+                    if !in_val && !in_sec && !in_cat {
+                        return false;
+                    }
+                }
+                match self.string_category_filter {
+                    StringCategoryFilter::All => {}
+                    StringCategoryFilter::Url => {
+                        if s.category != StringCategory::Url {
+                            return false;
+                        }
+                    }
+                    StringCategoryFilter::Ip => {
+                        if s.category != StringCategory::Ip {
+                            return false;
+                        }
+                    }
+                    StringCategoryFilter::FilePath => {
+                        if s.category != StringCategory::FilePath {
+                            return false;
+                        }
+                    }
+                    StringCategoryFilter::Crypto => {
+                        if s.category != StringCategory::Crypto {
+                            return false;
+                        }
+                    }
+                    StringCategoryFilter::Email => {
+                        if s.category != StringCategory::Email {
+                            return false;
+                        }
+                    }
+                    StringCategoryFilter::General => {
+                        if s.category != StringCategory::General {
+                            return false;
+                        }
+                    }
+                }
+                match self.string_encoding_filter {
+                    StringEncodingFilter::All => true,
+                    StringEncodingFilter::Ascii => s.encoding == StringEncoding::Ascii,
+                    StringEncodingFilter::Utf16Le => s.encoding == StringEncoding::Utf16Le,
+                }
+            })
+            .collect();
+
+        match self.string_sort {
+            StringSort::Offset => visible.sort_by_key(|(_, s)| s.offset),
+            StringSort::Category => visible.sort_by_key(|(_, s)| s.category.as_str()),
+            StringSort::Encoding => visible.sort_by_key(|(_, s)| s.encoding.as_str()),
+            StringSort::Section => visible.sort_by_key(|(_, s)| s.section.as_deref().unwrap_or("")),
+            StringSort::Length => visible.sort_by_key(|(_, s)| s.length),
+            StringSort::Value => visible.sort_by_key(|(_, s)| &s.value),
+        }
+
+        if !self.string_sort_asc {
+            visible.reverse();
+        }
+
+        ui.small(
+            egui::RichText::new(format!(
+                "Showing {} matching strings (of {} total)",
+                visible.len(),
+                total_strings
+            ))
+            .color(ThemeTokens::TEXT_MUTED),
+        );
+        ui.add_space(4.0);
+
+        let has_selection = self.selected_string.is_some();
+        let table_avail_height = if has_selection {
+            (ui.available_height() - self.string_detail_height - 12.0).max(100.0)
+        } else {
+            ui.available_height()
+        };
+
+        // 4. Sticky Table Header
+        let sort_field = self.string_sort;
+        let sort_asc = self.string_sort_asc;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+
+            render_col_header(
+                ui,
+                &mut self.string_col_widths[0],
+                DEFAULT_STRING_COL_WIDTHS[0],
+                70.0,
+                "Offset",
+                sort_arrow(sort_field == StringSort::Offset, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.string_sort,
+                        StringSort::Offset,
+                        &mut self.string_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.string_col_widths[1],
+                DEFAULT_STRING_COL_WIDTHS[1],
+                60.0,
+                "Category",
+                sort_arrow(sort_field == StringSort::Category, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.string_sort,
+                        StringSort::Category,
+                        &mut self.string_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.string_col_widths[2],
+                DEFAULT_STRING_COL_WIDTHS[2],
+                55.0,
+                "Encoding",
+                sort_arrow(sort_field == StringSort::Encoding, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.string_sort,
+                        StringSort::Encoding,
+                        &mut self.string_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.string_col_widths[3],
+                DEFAULT_STRING_COL_WIDTHS[3],
+                70.0,
+                "Section",
+                sort_arrow(sort_field == StringSort::Section, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.string_sort,
+                        StringSort::Section,
+                        &mut self.string_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.string_col_widths[4],
+                DEFAULT_STRING_COL_WIDTHS[4],
+                45.0,
+                "Len",
+                sort_arrow(sort_field == StringSort::Length, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.string_sort,
+                        StringSort::Length,
+                        &mut self.string_sort_asc,
+                    )
+                },
+            );
+            render_col_header(
+                ui,
+                &mut self.string_col_widths[5],
+                DEFAULT_STRING_COL_WIDTHS[5],
+                120.0,
+                "String Content",
+                sort_arrow(sort_field == StringSort::Value, sort_asc),
+                || {
+                    toggle_sort(
+                        &mut self.string_sort,
+                        StringSort::Value,
+                        &mut self.string_sort_asc,
+                    )
+                },
+            );
+        });
+
+        ui.separator();
+
+        // 5. Virtualized Table Rows
+        let num_rows = visible.len();
+        let row_height = 24.0;
+        egui::ScrollArea::both()
+            .max_height(table_avail_height)
+            .show_rows(ui, row_height, num_rows, |ui, row_range| {
+                for idx in row_range {
+                    let (orig_idx, s) = visible[idx];
+                    let is_selected = self.selected_string == Some(orig_idx);
+
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+
+                        // Offset
+                        let off_str = format!("{:#010x}", s.offset);
+                        cell_label(
+                            ui,
+                            self.string_col_widths[0],
+                            &off_str,
+                            true,
+                            Some(&off_str),
+                        );
+
+                        // Category
+                        let (cat_text, cat_color) = match s.category {
+                            StringCategory::Url => ("URL", ThemeTokens::INFO),
+                            StringCategory::Ip => ("IP", ThemeTokens::INFO),
+                            StringCategory::FilePath => ("PATH", ThemeTokens::WARNING),
+                            StringCategory::Crypto => ("SECRET", ThemeTokens::DANGER),
+                            StringCategory::Email => ("EMAIL", ThemeTokens::ACCENT_HOVER),
+                            StringCategory::General => ("GENERAL", ThemeTokens::TEXT_MUTED),
+                        };
+                        cell_label(
+                            ui,
+                            self.string_col_widths[1],
+                            egui::RichText::new(cat_text).color(cat_color).strong(),
+                            true,
+                            Some(cat_text),
+                        );
+
+                        // Encoding
+                        let enc_str = s.encoding.to_string();
+                        cell_label(ui, self.string_col_widths[2], &enc_str, true, None);
+
+                        // Section
+                        let sec_str = s.section.as_deref().unwrap_or("-");
+                        cell_label(ui, self.string_col_widths[3], sec_str, true, Some(sec_str));
+
+                        // Length
+                        cell_label(
+                            ui,
+                            self.string_col_widths[4],
+                            s.length.to_string(),
+                            true,
+                            None,
+                        );
+
+                        // Value (Clickable to select/inspect)
+                        let val_color = match s.category {
+                            StringCategory::Crypto => ThemeTokens::DANGER,
+                            StringCategory::Url => ThemeTokens::INFO,
+                            StringCategory::Ip => ThemeTokens::INFO,
+                            StringCategory::FilePath => ThemeTokens::WARNING,
+                            StringCategory::Email => ThemeTokens::ACCENT_HOVER,
+                            StringCategory::General => ThemeTokens::TEXT_PRIMARY,
+                        };
+
+                        let val_btn = egui::Button::new(
+                            egui::RichText::new(&s.value).color(val_color).monospace(),
+                        )
+                        .min_size(egui::vec2(self.string_col_widths[5], 20.0))
+                        .selected(is_selected)
+                        .truncate();
+
+                        let resp = ui.add(val_btn);
+                        if resp.clicked() {
+                            if is_selected {
+                                self.selected_string = None;
+                            } else {
+                                self.selected_string = Some(orig_idx);
+                            }
+                        }
+                        resp.on_hover_text(&s.value);
+
+                        // Row quick-copy button
+                        if ui
+                            .small_button("📋")
+                            .on_hover_text("Copy string to clipboard")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(s.value.clone());
+                            self.set_status("String copied to clipboard");
+                        }
+                    });
+                }
+            });
+
+        // 6. Bottom Detail Panel
+        if let Some(idx) = self.selected_string
+            && let Some(s) = binary.strings.get(idx)
+        {
+            ui.separator();
+
+            let (splitter_rect, splitter_resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 6.0),
+                egui::Sense::click_and_drag(),
+            );
+            if splitter_resp.hovered() || splitter_resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            if splitter_resp.dragged() {
+                self.string_detail_height =
+                    (self.string_detail_height - splitter_resp.drag_delta().y).clamp(90.0, 360.0);
+            }
+
+            let fill = if splitter_resp.dragged() {
+                ThemeTokens::BORDER_ACTIVE
+            } else {
+                ThemeTokens::BORDER_SUBTLE
+            };
+            ui.painter()
+                .rect_filled(splitter_rect, egui::CornerRadius::ZERO, fill);
+
+            egui::Frame::new()
+                .fill(ThemeTokens::BG_SURFACE)
+                .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.set_height(self.string_detail_height);
+
+                    ui.horizontal(|ui| {
+                        let (cat_str, cat_color) = match s.category {
+                            StringCategory::Url => ("🌐 URL", ThemeTokens::INFO),
+                            StringCategory::Ip => ("📍 IP Address", ThemeTokens::INFO),
+                            StringCategory::FilePath => ("📁 File Path", ThemeTokens::WARNING),
+                            StringCategory::Crypto => {
+                                ("🔑 Cryptographic Secret / Key", ThemeTokens::DANGER)
+                            }
+                            StringCategory::Email => {
+                                ("✉️ Email Address", ThemeTokens::ACCENT_HOVER)
+                            }
+                            StringCategory::General => {
+                                ("📄 String Record", ThemeTokens::TEXT_MUTED)
+                            }
+                        };
+                        badge(ui, cat_str, cat_color);
+
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format!("Offset: {:#010x}", s.offset))
+                                .monospace()
+                                .color(ThemeTokens::TEXT_SECONDARY),
+                        );
+                        if let Some(sec) = &s.section {
+                            ui.label(
+                                egui::RichText::new(format!("Section: {sec}"))
+                                    .monospace()
+                                    .color(ThemeTokens::TEXT_SECONDARY),
+                            );
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("Length: {} chars", s.length))
+                                .color(ThemeTokens::TEXT_MUTED),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("Encoding: {}", s.encoding))
+                                .color(ThemeTokens::TEXT_MUTED),
+                        );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕ Close").clicked() {
+                                self.selected_string = None;
+                            }
+                            if ui.button("📋 Copy Value").clicked() {
+                                ui.ctx().copy_text(s.value.clone());
+                                self.set_status("String copied to clipboard");
+                            }
+                            if ui.button("📋 Copy Offset").clicked() {
+                                ui.ctx().copy_text(format!("{:#010x}", s.offset));
+                                self.set_status("Offset copied to clipboard");
+                            }
+                        });
+                    });
+
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let mut text = s.value.clone();
+                        ui.add(
+                            egui::TextEdit::multiline(&mut text)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .lock_focus(false),
+                        );
+                    });
+                });
+        }
     }
 }
 

@@ -34,6 +34,8 @@ pub struct Binary {
     pub notes: Vec<ElfNote>,
     /// Relocation entries.
     pub relocations: Vec<Relocation>,
+    /// Extracted ASCII and UTF-16 strings with categorization.
+    pub strings: Vec<ExtractedString>,
     /// Cryptographic hashes of the binary file.
     pub hashes: FileHashes,
 }
@@ -302,6 +304,96 @@ pub struct MachOHeader {
     pub is_fat_universal: bool,
     /// List of all architecture slices in the universal container.
     pub fat_architectures: Vec<String>,
+}
+
+/// Category of an extracted binary string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum StringCategory {
+    /// Network URL or URI (http://, https://, ftp://).
+    Url,
+    /// IPv4 or IPv6 address.
+    Ip,
+    /// Absolute or relative file path (/etc/..., C:\...).
+    FilePath,
+    /// Cryptographic key, secret, base64 token, or UUID.
+    Crypto,
+    /// Email address.
+    Email,
+    /// General ASCII or UTF-16 string.
+    General,
+}
+
+impl StringCategory {
+    /// Identifier string for display and filtering.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Url => "url",
+            Self::Ip => "ip",
+            Self::FilePath => "path",
+            Self::Crypto => "crypto",
+            Self::Email => "email",
+            Self::General => "general",
+        }
+    }
+}
+
+impl fmt::Display for StringCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Url => write!(f, "URL"),
+            Self::Ip => write!(f, "IP"),
+            Self::FilePath => write!(f, "Path"),
+            Self::Crypto => write!(f, "Crypto/Key"),
+            Self::Email => write!(f, "Email"),
+            Self::General => write!(f, "General"),
+        }
+    }
+}
+
+/// Encoding of an extracted binary string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum StringEncoding {
+    /// 7-bit ASCII or UTF-8.
+    Ascii,
+    /// 16-bit little-endian Unicode (UTF-16LE).
+    Utf16Le,
+}
+
+impl StringEncoding {
+    /// Identifier string for display.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ascii => "ascii",
+            Self::Utf16Le => "utf16le",
+        }
+    }
+}
+
+impl fmt::Display for StringEncoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ascii => write!(f, "ASCII"),
+            Self::Utf16Le => write!(f, "UTF-16LE"),
+        }
+    }
+}
+
+/// An extracted string with location and semantic classification.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtractedString {
+    /// Byte offset within the binary file.
+    pub offset: u64,
+    /// Length of the string in characters.
+    pub length: usize,
+    /// Character encoding.
+    pub encoding: StringEncoding,
+    /// Semantic category.
+    pub category: StringCategory,
+    /// Section name where the string was located, if within section bounds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    /// Terminal-safe, clean string value.
+    pub value: String,
 }
 
 /// Safe filesystem metadata included in a report.

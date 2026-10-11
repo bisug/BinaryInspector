@@ -5,7 +5,7 @@ use std::fmt::Write;
 use crate::model::{Binary, Hardening, SecurityMitigations};
 
 /// Options selecting which categories to display in human-readable output.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ReportOptions {
     /// Show sections.
     pub sections: bool,
@@ -21,6 +21,12 @@ pub struct ReportOptions {
     pub notes: bool,
     /// Show relocations.
     pub relocations: bool,
+    /// Show extracted strings.
+    pub strings: bool,
+    /// Minimum string length for human report.
+    pub string_min_len: usize,
+    /// Filter strings by category name (case-insensitive).
+    pub string_category: Option<String>,
 }
 
 /// Versioned JSON report envelope (schema version 1).
@@ -53,6 +59,9 @@ pub fn human(binary: &Binary, sections: bool, segments: bool, dependencies: bool
             mitigations: false,
             notes: false,
             relocations: false,
+            strings: false,
+            string_min_len: 0,
+            string_category: None,
         },
     )
 }
@@ -263,6 +272,45 @@ pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
                 output,
                 "  ... ({} additional relocations omitted)",
                 binary.relocations.len() - 200
+            );
+        }
+    }
+
+    if options.strings {
+        let filtered: Vec<_> = binary
+            .strings
+            .iter()
+            .filter(|s| {
+                if options.string_min_len > 0 && s.value.len() < options.string_min_len {
+                    return false;
+                }
+                if let Some(cat) = &options.string_category
+                    && !s.category.as_str().eq_ignore_ascii_case(cat)
+                {
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        let _ = writeln!(output, "\nStrings ({} matching):", filtered.len());
+        for s in filtered.iter().take(200) {
+            let sec = s.section.as_deref().unwrap_or("-");
+            let _ = writeln!(
+                output,
+                "  [{:<8}] offset={:#010x} sec={:<14} enc={:<7} \"{}\"",
+                s.category.as_str(),
+                s.offset,
+                sec,
+                s.encoding.as_str(),
+                s.value
+            );
+        }
+        if filtered.len() > 200 {
+            let _ = writeln!(
+                output,
+                "  ... ({} additional strings omitted from summary)",
+                filtered.len() - 200
             );
         }
     }

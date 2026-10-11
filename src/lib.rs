@@ -11,6 +11,7 @@ pub mod macho;
 pub mod model;
 pub mod pe;
 pub mod report;
+pub mod strings;
 pub mod text;
 
 use std::path::Path;
