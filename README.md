@@ -11,7 +11,7 @@
   <a href="https://github.com/bisug/BinaryInspector/wiki"><img src="https://img.shields.io/badge/docs-wiki-8a63d2.svg" alt="Documentation wiki"></a>
 </p>
 
-BinaryInspector is a safe, local Rust CLI and native desktop application for inspecting ELF, Windows PE/COFF, and Apple Mach-O binaries. It never executes, loads, or dynamically links its target and performs no runtime network I/O.
+BinaryInspector is a safe, local Rust CLI and optional native desktop application for inspecting ELF, Windows PE/COFF, and Apple Mach-O binaries. It never executes, loads, or dynamically links its target and performs no runtime network I/O.
 
 **Documentation lives in the [wiki](https://github.com/bisug/BinaryInspector/wiki)** — installation, CLI reference, GUI guide, security checks, JSON schema, safety model, and more.
 
@@ -71,7 +71,7 @@ cd BinaryInspector
 cargo build --release
 ```
 
-The CLI executable is `target/release/binary-inspector`.
+The default build produces the CLI without compiling the GUI dependency stack. The CLI executable is `target/release/binary-inspector`.
 
 To build the native desktop GUI application:
 
@@ -80,6 +80,8 @@ cargo build --release --features gui --bin binary-inspector-gui
 ```
 
 The GUI executable is `target/release/binary-inspector-gui` (`.exe` on Windows). It supports file picker dialogs, drag-and-drop, and presents Overview, Mitigations, Symbols, Sections, Segments, Dependencies, Notes, and Relocations views. It uses the same safe inspection core as the CLI.
+
+Release builds use whole-program LTO and stripped symbols for smaller binaries. Use the `gui` feature only when building the desktop application.
 
 ## Usage
 
