@@ -1083,76 +1083,96 @@ impl ViewState {
                                     target: View,
                                     badge_count: Option<usize>| {
                         let is_active = *current_view == target;
-                        let frame = egui::Frame::new()
-                            .fill(if is_active {
-                                ThemeTokens::BG_SURFACE_HOVER
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            })
-                            .corner_radius(egui::CornerRadius::same(6))
-                            .stroke(egui::Stroke::new(
-                                1.0,
-                                if is_active {
-                                    ThemeTokens::BORDER_ACCENT
+                        let item_w = ui.available_width();
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(item_w, 36.0), egui::Sense::click());
+                        let is_hovered = resp.hovered();
+
+                        if is_hovered {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+
+                        let bg_color = if is_active {
+                            ThemeTokens::BG_SURFACE_HOVER
+                        } else if is_hovered {
+                            ThemeTokens::BG_SURFACE
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+
+                        let border_stroke = if is_active {
+                            egui::Stroke::new(1.0, ThemeTokens::BORDER_ACCENT)
+                        } else if is_hovered {
+                            egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE)
+                        } else {
+                            egui::Stroke::NONE
+                        };
+
+                        ui.painter().rect(
+                            rect,
+                            egui::CornerRadius::same(6),
+                            bg_color,
+                            border_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+
+                        let content_rect = rect.shrink2(egui::vec2(10.0, 4.0));
+                        let mut content_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(content_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+
+                        content_ui.spacing_mut().item_spacing.x = 8.0;
+                        content_ui.label(egui::RichText::new(target.icon()).size(14.0));
+                        content_ui.label(
+                            egui::RichText::new(target.label())
+                                .size(13.0)
+                                .strong()
+                                .color(if is_active || is_hovered {
+                                    ThemeTokens::TEXT_PRIMARY
                                 } else {
-                                    egui::Color32::TRANSPARENT
+                                    ThemeTokens::TEXT_SECONDARY
+                                }),
+                        );
+
+                        if let Some(count) = badge_count {
+                            content_ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let count_str = if count > 999 {
+                                        format!("{:.1}k", count as f64 / 1000.0)
+                                    } else {
+                                        count.to_string()
+                                    };
+                                    let badge_bg = if is_active {
+                                        ThemeTokens::ACCENT_PRIMARY.gamma_multiply(0.25)
+                                    } else if is_hovered {
+                                        ThemeTokens::BG_PANEL
+                                    } else {
+                                        ThemeTokens::BG_SURFACE
+                                    };
+                                    let badge_txt = if is_active {
+                                        ThemeTokens::ACCENT_HOVER
+                                    } else {
+                                        ThemeTokens::TEXT_MUTED
+                                    };
+
+                                    let pill = egui::Frame::new()
+                                        .fill(badge_bg)
+                                        .corner_radius(egui::CornerRadius::same(10))
+                                        .inner_margin(egui::Margin::symmetric(6, 2));
+                                    pill.show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(count_str)
+                                                .size(10.5)
+                                                .monospace()
+                                                .color(badge_txt),
+                                        );
+                                    });
                                 },
-                            ))
-                            .inner_margin(egui::Margin::symmetric(10, 7));
-
-                        let resp = frame
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(target.icon()).size(14.0));
-                                    ui.label(
-                                        egui::RichText::new(target.label())
-                                            .size(13.0)
-                                            .strong()
-                                            .color(if is_active {
-                                                ThemeTokens::TEXT_PRIMARY
-                                            } else {
-                                                ThemeTokens::TEXT_SECONDARY
-                                            }),
-                                    );
-
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if let Some(count) = badge_count {
-                                                let count_str = if count > 999 {
-                                                    format!("{:.1}k", count as f64 / 1000.0)
-                                                } else {
-                                                    count.to_string()
-                                                };
-                                                let badge_bg = if is_active {
-                                                    ThemeTokens::ACCENT_PRIMARY.gamma_multiply(0.25)
-                                                } else {
-                                                    ThemeTokens::BG_SURFACE
-                                                };
-                                                let badge_txt = if is_active {
-                                                    ThemeTokens::ACCENT_HOVER
-                                                } else {
-                                                    ThemeTokens::TEXT_MUTED
-                                                };
-
-                                                let pill = egui::Frame::new()
-                                                    .fill(badge_bg)
-                                                    .corner_radius(egui::CornerRadius::same(10))
-                                                    .inner_margin(egui::Margin::symmetric(6, 2));
-                                                pill.show(ui, |ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(count_str)
-                                                            .size(10.5)
-                                                            .monospace()
-                                                            .color(badge_txt),
-                                                    );
-                                                });
-                                            }
-                                        },
-                                    );
-                                });
-                            })
-                            .response;
+                            );
+                        }
 
                         if resp
                             .on_hover_text(format!(
@@ -1164,6 +1184,8 @@ impl ViewState {
                         {
                             *current_view = target;
                         }
+
+                        ui.add_space(2.0);
                     };
 
                     nav_item(ui, &mut self.view, View::Overview, None);
@@ -3495,33 +3517,53 @@ fn scorecard_item(
     icon: &str,
     hint: &str,
 ) -> bool {
-    let mut clicked = false;
-    let frame = egui::Frame::new()
-        .fill(ThemeTokens::BG_SURFACE)
-        .corner_radius(egui::CornerRadius::same(6))
-        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.45)))
-        .inner_margin(egui::Margin::symmetric(12, 10));
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(138.0, 58.0), egui::Sense::click());
+    let is_hovered = resp.hovered();
 
-    let resp = frame
-        .show(ui, |ui| {
-            ui.set_width(135.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(icon).size(14.0));
-                ui.strong(
-                    egui::RichText::new(title)
-                        .size(12.0)
-                        .color(ThemeTokens::TEXT_PRIMARY),
-                );
-            });
-            ui.add_space(4.0);
-            badge(ui, status, color);
-        })
-        .response;
-
-    if resp.on_hover_text(hint).clicked() {
-        clicked = true;
+    if is_hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    clicked
+
+    let bg_color = if is_hovered {
+        ThemeTokens::BG_SURFACE_HOVER
+    } else {
+        ThemeTokens::BG_SURFACE
+    };
+
+    let border_stroke = if is_hovered {
+        egui::Stroke::new(1.2, color)
+    } else {
+        egui::Stroke::new(1.0, color.gamma_multiply(0.45))
+    };
+
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(6),
+        bg_color,
+        border_stroke,
+        egui::StrokeKind::Inside,
+    );
+
+    let content_rect = rect.shrink2(egui::vec2(10.0, 8.0));
+    let mut content_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+
+    content_ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(icon).size(14.0));
+        ui.strong(
+            egui::RichText::new(title)
+                .size(12.0)
+                .color(ThemeTokens::TEXT_PRIMARY),
+        );
+    });
+    content_ui.add_space(4.0);
+    badge(&mut content_ui, status, color);
+
+    resp.on_hover_text(format!("{hint}\nClick to inspect in Mitigations view"))
+        .clicked()
 }
 
 fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
