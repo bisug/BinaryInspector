@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: read-all
+
+jobs:
+  prepare:
+    name: Prepare draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "$GITHUB_REF_NAME" --generate-notes
+
+  cli:
+    name: Linux CLI
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.99.0
+      - run: cargo build --release --locked --bin binary-inspector
+      - name: Package CLI
+        run: tar -czf binary-inspector-cli-linux-x86_64.tar.gz -C target/release binary-inspector
+      - name: Upload CLI asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" binary-inspector-cli-linux-x86_64.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
+
+  gui:
+    name: GUI (${{ matrix.name }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+          - name: macOS
+            os: macos-latest
+          - name: Windows x86_64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.99.0
+      - run: cargo build --release --locked --features gui --bin binary-inspector-gui
+      - name: Package Unix GUI
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            archive=binary-inspector-gui-linux-x86_64.tar.gz
+          else
+            archive=binary-inspector-gui-macos.tar.gz
+          fi
+          tar -czf "$archive" -C target/release binary-inspector-gui
+          echo "RELEASE_ASSET=$archive" >> "$GITHUB_ENV"
+      - name: Package Windows GUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = 'binary-inspector-gui-windows-x86_64.zip'
+          Compress-Archive -Path 'target/release/binary-inspector-gui.exe' -DestinationPath $archive -Force
+          "RELEASE_ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Upload Unix GUI asset
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "$RELEASE_ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Upload Windows GUI asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:GITHUB_REF_NAME" "$env:RELEASE_ASSET" --repo "$env:GITHUB_REPOSITORY" --clobber
+
+  publish:
+    name: Publish release
+    needs: [cli, gui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir release-assets --pattern '*.tar.gz' --pattern '*.zip'
+      - name: Generate checksums
+        working-directory: release-assets
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" release-assets/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

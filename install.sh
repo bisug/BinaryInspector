@@ -155,7 +155,7 @@ else
             VERSION="$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
         fi
         if [ -z "$VERSION" ]; then
-            VERSION="v0.3.0"
+            VERSION="v0.3.1"
         fi
     fi
 

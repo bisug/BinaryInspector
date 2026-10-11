@@ -601,7 +601,11 @@ impl InspectorApp {
                         .color(ThemeTokens::TEXT_PRIMARY),
                 );
 
-                badge(ui, "v0.3.0", ThemeTokens::TEXT_MUTED);
+                badge(
+                    ui,
+                    concat!("v", env!("CARGO_PKG_VERSION")),
+                    ThemeTokens::TEXT_MUTED,
+                );
 
                 ui.separator();
 
