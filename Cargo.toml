@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.99.0"
 license = "MIT"
-description = "Safe, local inspection of executable binaries (ELF, PE)"
+description = "Safe, local inspection of executable binaries (ELF, PE, Mach-O)"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

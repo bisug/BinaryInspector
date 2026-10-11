@@ -17,6 +17,9 @@ pub struct Binary {
     /// PE identification and header fields, if the binary is a PE/COFF file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pe: Option<PeHeader>,
+    /// Mach-O identification and header fields, if the binary is a Mach-O file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macho: Option<MachOHeader>,
     /// Sections in file order.
     pub sections: Vec<Section>,
     /// Program segments in file order.
@@ -259,6 +262,46 @@ pub struct PeDataDirectory {
     pub rva: u32,
     /// Size in bytes.
     pub size: u32,
+}
+
+/// Mach-O header fields reported by the inspector.
+#[derive(Debug, Clone, Serialize)]
+pub struct MachOHeader {
+    /// Target CPU architecture name.
+    pub cpu_arch: String,
+    /// Raw CPU type.
+    pub cpu_type: u32,
+    /// Raw CPU subtype.
+    pub cpu_subtype: u32,
+    /// Mach-O file type description (e.g. Executable, Dynamic Library, Bundle).
+    pub file_type: String,
+    /// Raw file type number.
+    pub file_type_raw: u32,
+    /// Number of load commands.
+    pub ncmds: u32,
+    /// Size of all load commands in bytes.
+    pub sizeofcmds: u32,
+    /// Header flags.
+    pub flags: u32,
+    /// Human-readable header flag descriptions.
+    pub flags_desc: Vec<String>,
+    /// True if Mach-O 64-bit, false if 32-bit.
+    pub is_64_bit: bool,
+    /// True if little endian, false if big endian.
+    pub is_little_endian: bool,
+    /// Virtual address of the entry point, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_point: Option<u64>,
+    /// Target minimum OS and SDK version, if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_os: Option<String>,
+    /// 128-bit Mach-O UUID, formatted as hexadecimal string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    /// True if this slice was extracted from a Fat / Universal binary.
+    pub is_fat_universal: bool,
+    /// List of all architecture slices in the universal container.
+    pub fat_architectures: Vec<String>,
 }
 
 /// Safe filesystem metadata included in a report.

@@ -98,6 +98,7 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
         file: FileMetadata { size_bytes },
         elf: Some(elf_header),
         pe: None,
+        macho: None,
         dynamic,
         sections,
         segments,

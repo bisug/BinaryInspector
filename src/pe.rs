@@ -313,6 +313,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
         },
         elf: None,
         pe: Some(pe_header),
+        macho: None,
         sections,
         segments,
         dynamic,

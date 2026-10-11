@@ -773,6 +773,25 @@ impl InspectorApp {
                         status_chip(ui, &format!("{}", pe.machine));
                         status_chip(ui, "little-endian");
                         status_chip(ui, &format!("{}", pe.subsystem));
+                    } else if let Some(macho) = &binary.macho {
+                        status_chip(
+                            ui,
+                            if macho.is_64_bit {
+                                "Mach-O 64-bit"
+                            } else {
+                                "Mach-O 32-bit"
+                            },
+                        );
+                        status_chip(ui, &macho.cpu_arch);
+                        status_chip(
+                            ui,
+                            if macho.is_little_endian {
+                                "little-endian"
+                            } else {
+                                "big-endian"
+                            },
+                        );
+                        status_chip(ui, &macho.file_type);
                     }
                     ui.separator();
                     ui.small(format!("Sections: {}", binary.sections.len()));
@@ -1517,6 +1536,55 @@ impl ViewState {
                                     }
                                 });
                                 ui.end_row();
+                            } else if let Some(macho) = &binary.macho {
+                                row(
+                                    ui,
+                                    "Bitness / Class",
+                                    if macho.is_64_bit {
+                                        "Mach-O 64-bit"
+                                    } else {
+                                        "Mach-O 32-bit"
+                                    },
+                                );
+                                row(ui, "ISA / Architecture", &macho.cpu_arch);
+                                row(
+                                    ui,
+                                    "Byte Ordering",
+                                    if macho.is_little_endian {
+                                        "Little-Endian"
+                                    } else {
+                                        "Big-Endian"
+                                    },
+                                );
+                                row(ui, "Mach-O File Type", &macho.file_type);
+                                if let Some(os) = &macho.min_os {
+                                    row(ui, "Target Platform / OS", os);
+                                }
+                                if let Some(u) = &macho.uuid {
+                                    row(ui, "Build UUID", u);
+                                }
+                                if macho.is_fat_universal {
+                                    row(
+                                        ui,
+                                        "Universal Slices",
+                                        &macho.fat_architectures.join(", "),
+                                    );
+                                }
+                                row(ui, "Load Commands", &macho.ncmds.to_string());
+                                row(ui, "Header Flags", &format!("{:#010x}", macho.flags));
+
+                                if let Some(ep) = macho.entry_point {
+                                    ui.strong("Entry Point");
+                                    ui.horizontal(|ui| {
+                                        let ep_str = format!("{:#010x}", ep);
+                                        ui.monospace(&ep_str);
+                                        if ui.small_button("📋 Copy").clicked() {
+                                            ui.ctx().copy_text(ep_str);
+                                            self.set_status("Entry point copied");
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
                             }
                         });
                 });

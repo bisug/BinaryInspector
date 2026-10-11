@@ -93,6 +93,45 @@ pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
         );
         let _ = writeln!(output, "Characteristics: {:#x}", pe.characteristics);
         let _ = writeln!(output, "DLL characteristics: {:#x}", pe.dll_characteristics);
+    } else if let Some(macho) = &binary.macho {
+        let _ = writeln!(output, "Architecture: {}", macho.cpu_arch);
+        let _ = writeln!(output, "Type: {}", macho.file_type);
+        let _ = writeln!(
+            output,
+            "Class: {}",
+            if macho.is_64_bit {
+                "Mach-O 64-bit"
+            } else {
+                "Mach-O 32-bit"
+            }
+        );
+        let _ = writeln!(
+            output,
+            "Endianness: {}",
+            if macho.is_little_endian {
+                "Little Endian"
+            } else {
+                "Big Endian"
+            }
+        );
+        if let Some(ep) = macho.entry_point {
+            let _ = writeln!(output, "Entry point: {:#x}", ep);
+        }
+        if let Some(os) = &macho.min_os {
+            let _ = writeln!(output, "Target OS: {}", os);
+        }
+        if let Some(u) = &macho.uuid {
+            let _ = writeln!(output, "UUID: {}", u);
+        }
+        if macho.is_fat_universal {
+            let _ = writeln!(
+                output,
+                "Universal Binary: Yes (slices: {})",
+                macho.fat_architectures.join(", ")
+            );
+        }
+        let _ = writeln!(output, "Load commands: {}", macho.ncmds);
+        let _ = writeln!(output, "Flags: {:#x}", macho.flags);
     }
 
     if options.mitigations {
