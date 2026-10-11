@@ -4,14 +4,14 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Inspect metadata in an ELF binary without executing it.
+/// Inspect metadata in an executable binary without executing it.
 #[derive(Debug, Parser)]
 #[command(
     version,
-    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n  binary-inspector /bin/ls --json\n\nExit codes:\n  0  success\n  1  usage error\n  2  I/O error, or the target is not a regular file\n  3  the input was rejected: not a valid ELF binary, the file exceeds the size limit,\n     or the report could not be serialized"
+    after_help = "Examples:\n  binary-inspector /bin/ls\n  binary-inspector /bin/ls -m\n  binary-inspector /bin/ls -s -n\n  binary-inspector ./app -S -l\n  binary-inspector /bin/ls --json\n\nExit codes:\n  0  success\n  1  usage error\n  2  I/O error, or the target is not a regular file\n  3  the input was rejected: not a valid executable binary, the file exceeds the size limit,\n     or the report could not be serialized"
 )]
 pub struct Cli {
-    /// ELF file to inspect.
+    /// Executable file to inspect (ELF, PE/COFF).
     pub file: PathBuf,
     /// Include section information.
     #[arg(short = 'S', long)]

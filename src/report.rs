@@ -60,17 +60,40 @@ pub fn human(binary: &Binary, sections: bool, segments: bool, dependencies: bool
 /// Formats a comprehensive human-readable report.
 pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "Format: ELF");
+    let _ = writeln!(output, "Format: {}", binary.format);
     let _ = writeln!(output, "File size: {} bytes", binary.file.size_bytes);
     let _ = writeln!(output, "SHA-256: {}", binary.hashes.sha256);
-    let _ = writeln!(output, "Class: {}", binary.elf.class);
-    let _ = writeln!(output, "Endianness: {}", binary.elf.endianness);
-    let _ = writeln!(output, "Type: {}", binary.elf.elf_type);
-    let _ = writeln!(output, "Machine: {}", binary.elf.machine);
-    let _ = writeln!(output, "OS ABI: {}", binary.elf.os_abi);
-    let _ = writeln!(output, "ABI version: {}", binary.elf.abi_version);
-    let _ = writeln!(output, "Entry point: {:#x}", binary.elf.entry_point);
-    let _ = writeln!(output, "Flags: {:#x}", binary.elf.flags);
+    if let Some(elf) = &binary.elf {
+        let _ = writeln!(output, "Class: {}", elf.class);
+        let _ = writeln!(output, "Endianness: {}", elf.endianness);
+        let _ = writeln!(output, "Type: {}", elf.elf_type);
+        let _ = writeln!(output, "Machine: {}", elf.machine);
+        let _ = writeln!(output, "OS ABI: {}", elf.os_abi);
+        let _ = writeln!(output, "ABI version: {}", elf.abi_version);
+        let _ = writeln!(output, "Entry point: {:#x}", elf.entry_point);
+        let _ = writeln!(output, "Flags: {:#x}", elf.flags);
+    } else if let Some(pe) = &binary.pe {
+        let _ = writeln!(output, "Machine: {}", pe.machine);
+        let _ = writeln!(
+            output,
+            "Type: {}",
+            if pe.is_pe32_plus {
+                "PE32+ (64-bit)"
+            } else {
+                "PE32 (32-bit)"
+            }
+        );
+        let _ = writeln!(output, "Subsystem: {}", pe.subsystem);
+        let _ = writeln!(output, "Entry point: {:#x}", pe.entry_point);
+        let _ = writeln!(output, "Image base: {:#x}", pe.image_base);
+        let _ = writeln!(
+            output,
+            "Linker version: {}.{}",
+            pe.linker_version.0, pe.linker_version.1
+        );
+        let _ = writeln!(output, "Characteristics: {:#x}", pe.characteristics);
+        let _ = writeln!(output, "DLL characteristics: {:#x}", pe.dll_characteristics);
+    }
 
     if options.mitigations {
         format_mitigations(&mut output, &binary.mitigations);

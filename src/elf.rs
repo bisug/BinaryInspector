@@ -96,7 +96,8 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     Ok(Binary {
         format: FileFormat::Elf,
         file: FileMetadata { size_bytes },
-        elf: elf_header,
+        elf: Some(elf_header),
+        pe: None,
         dynamic,
         sections,
         segments,
@@ -1768,10 +1769,11 @@ mod tests {
         bytes[24..32].copy_from_slice(&0x401000_u64.to_le_bytes());
         bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
         let binary = parse(&bytes, 64).unwrap_or_else(|error| panic!("{error}"));
-        assert!(matches!(binary.elf.class, ElfClass::Elf64));
-        assert!(matches!(binary.elf.endianness, Endianness::Little));
-        assert!(matches!(binary.elf.machine, Machine::X86_64));
-        assert_eq!(binary.elf.entry_point, 0x401000);
+        let elf_hdr = binary.elf.as_ref().expect("expected ELF header");
+        assert!(matches!(elf_hdr.class, ElfClass::Elf64));
+        assert!(matches!(elf_hdr.endianness, Endianness::Little));
+        assert!(matches!(elf_hdr.machine, Machine::X86_64));
+        assert_eq!(elf_hdr.entry_point, 0x401000);
         assert!(binary.sections.is_empty());
         assert!(!binary.hashes.sha256.is_empty());
     }

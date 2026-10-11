@@ -11,8 +11,12 @@ pub struct Binary {
     pub format: FileFormat,
     /// Basic metadata obtained from the filesystem.
     pub file: FileMetadata,
-    /// ELF identification and header fields.
-    pub elf: ElfHeader,
+    /// ELF identification and header fields, if the binary is an ELF file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elf: Option<ElfHeader>,
+    /// PE identification and header fields, if the binary is a PE/COFF file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pe: Option<PeHeader>,
     /// Sections in file order.
     pub sections: Vec<Section>,
     /// Program segments in file order.
@@ -122,10 +126,139 @@ pub struct Segment {
 }
 
 /// The inspected file format.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum FileFormat {
-    /// Executable and Linkable Format.
+    /// Executable and Linkable Format (Linux, BSD, Android).
     Elf,
+    /// Portable Executable / COFF (Windows .exe, .dll, .sys).
+    Pe,
+    /// Mach-O (macOS, iOS, Darwin).
+    MachO,
+}
+
+impl fmt::Display for FileFormat {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Elf => "ELF",
+            Self::Pe => "PE/COFF",
+            Self::MachO => "Mach-O",
+        })
+    }
+}
+
+/// PE header fields reported by the inspector.
+#[derive(Debug, Clone, Serialize)]
+pub struct PeHeader {
+    /// Target machine architecture.
+    pub machine: PeMachine,
+    /// PE COFF characteristics flags.
+    pub characteristics: u16,
+    /// Unix timestamp of when the file was built.
+    pub time_date_stamp: u32,
+    /// True if PE32+ (64-bit), false if PE32 (32-bit).
+    pub is_pe32_plus: bool,
+    /// RVA of the entry point function.
+    pub entry_point: u32,
+    /// Preferred base address in memory.
+    pub image_base: u64,
+    /// Section alignment in memory.
+    pub section_alignment: u32,
+    /// Section alignment on disk.
+    pub file_alignment: u32,
+    /// Target subsystem.
+    pub subsystem: PeSubsystem,
+    /// DLL characteristics flags (contains ASLR, DEP/NX, CFG, etc.).
+    pub dll_characteristics: u16,
+    /// Total virtual size of the image in memory.
+    pub size_of_image: u32,
+    /// Size of all headers on disk.
+    pub size_of_headers: u32,
+    /// Header checksum.
+    pub checksum: u32,
+    /// Major and minor linker version.
+    pub linker_version: (u8, u8),
+    /// Data directories defined in the optional header.
+    pub data_directories: Vec<PeDataDirectory>,
+}
+
+/// PE target machine architecture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum PeMachine {
+    /// Intel 386 or compatible 32-bit.
+    I386,
+    /// AMD64 / x86-64 64-bit.
+    Amd64,
+    /// ARM little endian.
+    Arm,
+    /// ARM64 little endian.
+    Arm64,
+    /// Intel Itanium IA-64.
+    Ia64,
+    /// Other machine architecture.
+    Other(u16),
+}
+
+impl fmt::Display for PeMachine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::I386 => formatter.write_str("Intel 386 (x86)"),
+            Self::Amd64 => formatter.write_str("x86-64 (AMD64)"),
+            Self::Arm => formatter.write_str("ARM"),
+            Self::Arm64 => formatter.write_str("ARM64 (AArch64)"),
+            Self::Ia64 => formatter.write_str("Intel Itanium (IA-64)"),
+            Self::Other(val) => write!(formatter, "Unknown ({val:#06x})"),
+        }
+    }
+}
+
+/// Windows PE subsystem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum PeSubsystem {
+    /// Device drivers and native Windows processes.
+    Native,
+    /// Windows graphical user interface (GUI).
+    WindowsGui,
+    /// Windows character mode / console user interface (CUI).
+    WindowsCui,
+    /// POSIX character mode.
+    PosixCui,
+    /// Windows CE.
+    WindowsCeGui,
+    /// EFI application.
+    EfiApplication,
+    /// EFI boot service driver.
+    EfiBootServiceDriver,
+    /// EFI runtime driver.
+    EfiRuntimeDriver,
+    /// Other subsystem.
+    Other(u16),
+}
+
+impl fmt::Display for PeSubsystem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Native => formatter.write_str("Native"),
+            Self::WindowsGui => formatter.write_str("Windows GUI"),
+            Self::WindowsCui => formatter.write_str("Windows Console (CUI)"),
+            Self::PosixCui => formatter.write_str("POSIX CUI"),
+            Self::WindowsCeGui => formatter.write_str("Windows CE GUI"),
+            Self::EfiApplication => formatter.write_str("EFI Application"),
+            Self::EfiBootServiceDriver => formatter.write_str("EFI Boot Service Driver"),
+            Self::EfiRuntimeDriver => formatter.write_str("EFI Runtime Driver"),
+            Self::Other(val) => write!(formatter, "Subsystem {val}"),
+        }
+    }
+}
+
+/// One PE data directory entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct PeDataDirectory {
+    /// Directory index / name (e.g. Export, Import, Resource, Security).
+    pub name: String,
+    /// Relative Virtual Address.
+    pub rva: u32,
+    /// Size in bytes.
+    pub size: u32,
 }
 
 /// Safe filesystem metadata included in a report.

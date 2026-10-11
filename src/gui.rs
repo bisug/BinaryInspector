@@ -30,7 +30,7 @@ fn main() -> eframe::Result {
         eframe::NativeOptions {
             renderer: eframe::Renderer::Glow,
             viewport: egui::ViewportBuilder::default()
-                .with_title("BinaryInspector — Safe ELF Analysis")
+                .with_title("BinaryInspector — Safe Binary Analysis")
                 .with_inner_size([1240.0, 820.0])
                 .with_min_inner_size([760.0, 500.0]),
             ..Default::default()
@@ -689,7 +689,7 @@ impl InspectorApp {
                             ui.spinner();
                             ui.add_space(14.0);
                             ui.label(
-                                egui::RichText::new("Parsing ELF Structures Safely…")
+                                egui::RichText::new("Parsing Binary Structures Safely…")
                                     .size(17.0)
                                     .strong()
                                     .color(ThemeTokens::TEXT_PRIMARY),
@@ -756,10 +756,24 @@ impl InspectorApp {
                 }
 
                 if let Inspection::Ready { binary, .. } = &self.inspection {
-                    status_chip(ui, &format!("{}", binary.elf.class));
-                    status_chip(ui, &format!("{}", binary.elf.machine));
-                    status_chip(ui, &format!("{}", binary.elf.endianness));
-                    status_chip(ui, &format!("{}", binary.elf.elf_type));
+                    if let Some(elf) = &binary.elf {
+                        status_chip(ui, &format!("{}", elf.class));
+                        status_chip(ui, &format!("{}", elf.machine));
+                        status_chip(ui, &format!("{}", elf.endianness));
+                        status_chip(ui, &format!("{}", elf.elf_type));
+                    } else if let Some(pe) = &binary.pe {
+                        status_chip(
+                            ui,
+                            if pe.is_pe32_plus {
+                                "PE32+ (64-bit)"
+                            } else {
+                                "PE32 (32-bit)"
+                            },
+                        );
+                        status_chip(ui, &format!("{}", pe.machine));
+                        status_chip(ui, "little-endian");
+                        status_chip(ui, &format!("{}", pe.subsystem));
+                    }
                     ui.separator();
                     ui.small(format!("Sections: {}", binary.sections.len()));
                     ui.small(format!("Symbols: {}", binary.symbols.len()));
@@ -822,14 +836,14 @@ impl InspectorApp {
                 );
                 ui.add_space(8.0);
                 ui.heading(
-                    egui::RichText::new("Inspect an ELF Binary")
+                    egui::RichText::new("Inspect an Executable Binary")
                         .size(23.0)
                         .color(ThemeTokens::TEXT_PRIMARY),
                 );
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
-                        "Drag and drop any Linux/Unix ELF executable, shared library, or object file.\nBinaryInspector safely extracts header structure, security mitigations, symbols, and entropy.",
+                        "Drag and drop any ELF (Linux) or PE/COFF (Windows .exe/.dll) binary file.\nBinaryInspector safely extracts header structure, security mitigations, symbols, and entropy.",
                     )
                     .color(ThemeTokens::TEXT_SECONDARY)
                     .size(13.5),
@@ -838,7 +852,7 @@ impl InspectorApp {
                 ui.add_space(20.0);
 
                 let btn = egui::Button::new(
-                    egui::RichText::new("  Choose ELF Binary (Ctrl+O)  ")
+                    egui::RichText::new("  Choose Binary (Ctrl+O)  ")
                         .strong()
                         .size(14.5)
                         .color(egui::Color32::WHITE),
@@ -1418,28 +1432,70 @@ impl ViewState {
                         .num_columns(2)
                         .spacing([24.0, 8.0])
                         .show(ui, |ui| {
-                            row(ui, "Bitness / Class", &binary.elf.class.to_string());
-                            row(ui, "ISA / Architecture", &binary.elf.machine.to_string());
-                            row(ui, "Byte Ordering", &binary.elf.endianness.to_string());
-                            row(ui, "Binary Type", &binary.elf.elf_type.to_string());
-                            row(ui, "Operating System ABI", &binary.elf.os_abi.to_string());
-                            row(ui, "ABI Version", &binary.elf.abi_version.to_string());
-                            row(
-                                ui,
-                                "Processor Flags (e_flags)",
-                                &format!("{:#x}", binary.elf.flags),
-                            );
+                            if let Some(elf) = &binary.elf {
+                                row(ui, "Bitness / Class", &elf.class.to_string());
+                                row(ui, "ISA / Architecture", &elf.machine.to_string());
+                                row(ui, "Byte Ordering", &elf.endianness.to_string());
+                                row(ui, "Binary Type", &elf.elf_type.to_string());
+                                row(ui, "Operating System ABI", &elf.os_abi.to_string());
+                                row(ui, "ABI Version", &elf.abi_version.to_string());
+                                row(
+                                    ui,
+                                    "Processor Flags (e_flags)",
+                                    &format!("{:#x}", elf.flags),
+                                );
 
-                            ui.strong("Entry Point (Virtual Address)");
-                            ui.horizontal(|ui| {
-                                let ep_str = format!("{:#010x}", binary.elf.entry_point);
-                                ui.monospace(&ep_str);
-                                if ui.small_button("📋 Copy").clicked() {
-                                    ui.ctx().copy_text(ep_str);
-                                    self.set_status("Entry point copied");
-                                }
-                            });
-                            ui.end_row();
+                                ui.strong("Entry Point (Virtual Address)");
+                                ui.horizontal(|ui| {
+                                    let ep_str = format!("{:#010x}", elf.entry_point);
+                                    ui.monospace(&ep_str);
+                                    if ui.small_button("📋 Copy").clicked() {
+                                        ui.ctx().copy_text(ep_str);
+                                        self.set_status("Entry point copied");
+                                    }
+                                });
+                                ui.end_row();
+                            } else if let Some(pe) = &binary.pe {
+                                row(
+                                    ui,
+                                    "Bitness / Class",
+                                    if pe.is_pe32_plus {
+                                        "PE32+ (64-bit)"
+                                    } else {
+                                        "PE32 (32-bit)"
+                                    },
+                                );
+                                row(ui, "ISA / Architecture", &pe.machine.to_string());
+                                row(ui, "Byte Ordering", "Little-Endian");
+                                row(ui, "Subsystem", &pe.subsystem.to_string());
+                                row(
+                                    ui,
+                                    "Linker Version",
+                                    &format!("{}.{}", pe.linker_version.0, pe.linker_version.1),
+                                );
+                                row(ui, "Image Base", &format!("{:#010x}", pe.image_base));
+                                row(
+                                    ui,
+                                    "Characteristics",
+                                    &format!("{:#06x}", pe.characteristics),
+                                );
+                                row(
+                                    ui,
+                                    "DLL Characteristics",
+                                    &format!("{:#06x}", pe.dll_characteristics),
+                                );
+
+                                ui.strong("Entry Point (RVA)");
+                                ui.horizontal(|ui| {
+                                    let ep_str = format!("{:#010x}", pe.entry_point);
+                                    ui.monospace(&ep_str);
+                                    if ui.small_button("📋 Copy").clicked() {
+                                        ui.ctx().copy_text(ep_str);
+                                        self.set_status("Entry point copied");
+                                    }
+                                });
+                                ui.end_row();
+                            }
                         });
                 });
             });
