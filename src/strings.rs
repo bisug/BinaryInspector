@@ -175,13 +175,10 @@ fn record_utf16le(
         return true;
     }
 
-    let mut u16_chars = Vec::with_capacity(char_len);
+    let mut decoded = String::with_capacity(char_len);
     for chunk in bytes[start..start + char_len * 2].as_chunks::<2>().0 {
-        u16_chars.push(u16::from_le_bytes(*chunk));
+        decoded.push(char::from(chunk[0]));
     }
-    let Ok(decoded) = String::from_utf16(&u16_chars) else {
-        return true;
-    };
     let cat = classify_string(&decoded);
     let sec = find_section(start as u64, sections);
     let escaped = text::escape_bytes(decoded.as_bytes());
@@ -257,11 +254,9 @@ fn is_email(s: &str) -> bool {
     if !s.contains('@') || s.contains(' ') || s.len() < 6 || s.len() > 254 {
         return false;
     }
-    let parts: Vec<&str> = s.split('@').collect();
-    if parts.len() != 2 {
+    let Some((user, domain)) = s.split_once('@') else {
         return false;
-    }
-    let (user, domain) = (parts[0], parts[1]);
+    };
     if user.is_empty() || domain.is_empty() || !domain.contains('.') {
         return false;
     }
@@ -274,37 +269,34 @@ fn is_email(s: &str) -> bool {
 }
 
 fn is_ipv4(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 4 {
-        return false;
-    }
-    for part in parts {
+    let mut count = 0;
+    for part in s.split('.') {
         if part.is_empty() || part.len() > 3 {
             return false;
         }
-        if let Ok(num) = part.parse::<u8>() {
-            if part.starts_with('0') && part.len() > 1 {
-                return false; // Leading zero
-            }
-            let _ = num;
-        } else {
+        if part.parse::<u8>().is_err() {
             return false;
         }
+        if part.starts_with('0') && part.len() > 1 {
+            return false; // Leading zero
+        }
+        count += 1;
     }
-    true
+    count == 4
 }
 
 fn is_ipv6(s: &str) -> bool {
     if !s.contains(':') || s.len() < 3 || s.len() > 45 {
         return false;
     }
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() < 3 || parts.len() > 8 {
-        return false;
+    let mut count = 0;
+    for part in s.split(':') {
+        if part.len() > 4 || !part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return false;
+        }
+        count += 1;
     }
-    parts
-        .iter()
-        .all(|p| p.len() <= 4 && p.chars().all(|c| c.is_ascii_hexdigit()))
+    (3..=8).contains(&count)
 }
 
 fn is_file_path(s: &str) -> bool {
@@ -352,11 +344,16 @@ fn is_crypto_or_secret(s: &str) -> bool {
     // UUID: 8-4-4-4-12 hex characters
     if s.len() == 36 {
         let b = s.as_bytes();
-        if b[8] == b'-' && b[13] == b'-' && b[18] == b'-' && b[23] == b'-' {
-            let hex_only = s.replace('-', "");
-            if hex_only.len() == 32 && hex_only.chars().all(|c| c.is_ascii_hexdigit()) {
-                return true;
-            }
+        if b[8] == b'-'
+            && b[13] == b'-'
+            && b[18] == b'-'
+            && b[23] == b'-'
+            && s.bytes().enumerate().all(|(index, byte)| {
+                matches!(index, 8 | 13 | 18 | 23) && byte == b'-'
+                    || !matches!(index, 8 | 13 | 18 | 23) && byte.is_ascii_hexdigit()
+            })
+        {
+            return true;
         }
     }
 

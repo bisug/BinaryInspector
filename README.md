@@ -76,7 +76,7 @@ The CLI executable is `target/release/binary-inspector`.
 To build the native desktop GUI application:
 
 ```sh
-cargo build --release --bin binary-inspector-gui
+cargo build --release --features gui --bin binary-inspector-gui
 ```
 
 The GUI executable is `target/release/binary-inspector-gui` (`.exe` on Windows). It supports file picker dialogs, drag-and-drop, and presents Overview, Mitigations, Symbols, Sections, Segments, Dependencies, Notes, and Relocations views. It uses the same safe inspection core as the CLI.
@@ -138,7 +138,7 @@ Requires Rust 1.99.0 or newer, edition 2024. The CLI runs on Linux, macOS, and W
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features gui -- -D warnings
 cargo test
 cargo doc --no-deps
 ```

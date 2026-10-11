@@ -4,7 +4,7 @@ Use Rust 1.99.0 and keep changes small and reviewable. Before committing, run:
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features gui -- -D warnings
 cargo test
 cargo doc --no-deps
 ```
@@ -15,4 +15,4 @@ Do not add dependencies without documenting why the standard library and install
 
 Use GitHub issues for public bugs and feature requests; use pull requests for changes. Do not report security issues publicly—follow [SECURITY.md](SECURITY.md).
 
-The GUI is a separate executable, `binary-inspector-gui`, and must call the shared `inspect` function rather than reimplementing parsing. Validate it with `cargo build --release --bin binary-inspector-gui`; visual smoke-testing is required on each supported desktop platform before a GUI release.
+The GUI is a separate executable, `binary-inspector-gui`, and must call the shared `inspect` function rather than reimplementing parsing. Validate it with `cargo build --release --features gui --bin binary-inspector-gui`; visual smoke-testing is required on each supported desktop platform before a GUI release.

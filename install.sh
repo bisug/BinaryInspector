@@ -143,7 +143,7 @@ if [ "$FROM_SOURCE" = true ]; then
         echo "✓ Installed CLI to $DEST_DIR/binary-inspector"
     fi
     if [ "$INSTALL_GUI" = true ]; then
-        cargo build --release --locked --bin binary-inspector-gui
+        cargo build --release --locked --features gui --bin binary-inspector-gui
         install -m 755 target/release/binary-inspector-gui "$DEST_DIR/binary-inspector-gui"
         echo "✓ Installed GUI to $DEST_DIR/binary-inspector-gui"
     fi
