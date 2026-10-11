@@ -21,7 +21,7 @@ jobs:
         with:
           toolchain: 1.99.0
       - run: cargo test --locked
-      - run: cargo doc --no-deps
+      - run: cargo doc --no-deps --locked
   lint:
     runs-on: ubuntu-latest
     steps:
