@@ -535,12 +535,7 @@ fn parse_symbols(
 
         let string_table_bytes = if let Some(str_sec) = tables.get(section.link as usize) {
             if str_sec.section_type == 3 {
-                Some(file_slice(
-                    bytes,
-                    str_sec.offset,
-                    str_sec.size,
-                    "symbol string table",
-                )?)
+                file_slice(bytes, str_sec.offset, str_sec.size, "symbol string table").ok()
             } else {
                 None
             }
@@ -553,11 +548,16 @@ fn parse_symbols(
             ElfClass::Elf64 => 24,
         };
 
-        let sym_data = file_slice(bytes, section.offset, section.size, "symbol table")?;
+        let Ok(sym_data) = file_slice(bytes, section.offset, section.size, "symbol table") else {
+            continue;
+        };
         let entry_count = sym_data.len() / entry_size;
         let clamped_count = entry_count.min(MAX_SYMBOL_ENTRIES);
 
         for i in 0..clamped_count {
+            if symbols.len() >= MAX_SYMBOL_ENTRIES {
+                break;
+            }
             let offset = i * entry_size;
             let (name_offset, value, size, info, other, shndx) = match class {
                 ElfClass::Elf32 => {
@@ -627,7 +627,7 @@ fn parse_symbols(
             let name = if name_offset != 0 {
                 if let Some(str_table) = string_table_bytes {
                     match string_at(str_table, name_offset) {
-                        Ok(s) => take_text(s, &mut text_bytes)?,
+                        Ok(s) => take_text(s, &mut text_bytes).unwrap_or_default(),
                         Err(_) => String::new(),
                     }
                 } else {
@@ -680,14 +680,17 @@ fn dynamic_symbol_table(
     let Some(segment) = segments.iter().find(|segment| segment.segment_type == 2) else {
         return Ok(None);
     };
-    let entries = read_dynamic_entries(
+    let entries = match read_dynamic_entries(
         bytes,
         class,
         endianness,
         segment.offset,
         segment.file_size,
         "dynamic segment",
-    )?;
+    ) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(None),
+    };
     let address_of = |tag: u64| {
         entries
             .iter()
@@ -731,8 +734,11 @@ fn dynamic_symbol_table(
         return Ok(None);
     }
     // Reject tables that do not actually fit in the file before use.
-    file_slice(bytes, symtab_offset, symtab_size, "dynamic symbol table")?;
-    file_slice(bytes, strtab_offset, strtab_size, "dynamic string table")?;
+    if file_slice(bytes, symtab_offset, symtab_size, "dynamic symbol table").is_err()
+        || file_slice(bytes, strtab_offset, strtab_size, "dynamic string table").is_err()
+    {
+        return Ok(None);
+    }
 
     let describe = |section_type: u32, offset: u64, size: u64| Section {
         index: 0,
@@ -1347,7 +1353,10 @@ fn parse_sections(
         };
 
         let name = match string_table {
-            Some(table) => take_text(string_at(table, section.name_offset)?, &mut text_bytes)?,
+            Some(table) => match string_at(table, section.name_offset) {
+                Ok(s) => take_text(s, &mut text_bytes).unwrap_or_default(),
+                Err(_) => String::new(),
+            },
             None => String::new(),
         };
 
@@ -1634,16 +1643,17 @@ fn capped_name(name: &[u8]) -> &[u8] {
 }
 
 fn take_text(text: String, total: &mut usize) -> Result<String, AppError> {
-    *total = total
+    let new_total = total
         .checked_add(text.len())
         .ok_or(ParseError::IntegerOverflow("decoded text size"))?;
-    if *total > MAX_TOTAL_TEXT_BYTES {
+    if new_total > MAX_TOTAL_TEXT_BYTES {
         return Err(ParseError::LimitExceeded {
             what: "decoded text size",
             limit: MAX_TOTAL_TEXT_BYTES,
         }
         .into());
     }
+    *total = new_total;
     Ok(text)
 }
 
@@ -2159,6 +2169,81 @@ mod tests {
         assert!(mit.has_insecure_rpath);
         assert_eq!(mit.pie, PieStatus::NoPie);
         assert_eq!(mit.relro, Relro::Unknown);
+    }
+
+    #[test]
+    fn parse_symbols_tolerates_corrupted_symbol_or_string_table() {
+        let mut bytes = vec![0_u8; 300];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]); // 64-bit, little-endian, EV_CURRENT
+        u16_into(&mut bytes, 16, 2); // ET_EXEC
+        u16_into(&mut bytes, 18, 62); // EM_X86_64
+        u32_into(&mut bytes, 20, 1);
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes()); // ehsize
+        bytes[40..48].copy_from_slice(&64_u64.to_le_bytes()); // e_shoff
+        u16_into(&mut bytes, 58, 64); // e_shentsize
+        u16_into(&mut bytes, 60, 4); // e_shnum = 4
+        u16_into(&mut bytes, 62, 1); // e_shstrndx = 1
+
+        // Section 0: NULL
+        // Section 1: SHT_STRTAB (shstrtab)
+        u32_into(&mut bytes, 64 + 64 + 4, 3); // SHT_STRTAB
+        u64_into(&mut bytes, 64 + 64 + 24, 0); // offset 0
+        u64_into(&mut bytes, 64 + 64 + 32, 0); // size 0
+
+        // Section 2: SHT_SYMTAB claiming offset past EOF (corrupted/stripped)
+        u32_into(&mut bytes, 64 + 128 + 4, 2); // SHT_SYMTAB
+        u64_into(&mut bytes, 64 + 128 + 24, 50000); // sh_offset past EOF
+        u64_into(&mut bytes, 64 + 128 + 32, 24); // sh_size
+
+        // Section 3: SHT_DYNSYM with valid in-bounds offset
+        u32_into(&mut bytes, 64 + 192 + 4, 11); // SHT_DYNSYM
+        u64_into(&mut bytes, 64 + 192 + 24, 64 + 256); // sh_offset within file
+        u64_into(&mut bytes, 64 + 192 + 32, 24); // sh_size = 1 symbol
+        u32_into(&mut bytes, 64 + 192 + 40, 1); // link to strtab
+
+        // Symbol entry at 64 + 256 (null symbol)
+        // file length is already 320 >= 320
+        bytes.resize(350, 0);
+
+        let binary = parse(&bytes, bytes.len() as u64).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(binary.sections.len(), 4);
+        assert_eq!(binary.symbols.len(), 1);
+        assert_eq!(
+            binary.symbols[0].table,
+            crate::model::SymbolTableKind::Dynamic
+        );
+    }
+
+    #[test]
+    fn parse_sections_tolerates_corrupted_string_offset() {
+        let mut bytes = vec![0_u8; 192];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        u16_into(&mut bytes, 16, 2);
+        u16_into(&mut bytes, 18, 62);
+        u32_into(&mut bytes, 20, 1);
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[40..48].copy_from_slice(&64_u64.to_le_bytes()); // e_shoff
+        u16_into(&mut bytes, 58, 64);
+        u16_into(&mut bytes, 60, 2);
+        u16_into(&mut bytes, 62, 0); // e_shstrndx = 0
+
+        // Section 0 is SHT_STRTAB with 1 byte (null)
+        u32_into(&mut bytes, 64 + 4, 3);
+        u64_into(&mut bytes, 64 + 24, 192);
+        u64_into(&mut bytes, 64 + 32, 1);
+
+        // Section 1 has sh_name pointing way beyond section 0
+        u32_into(&mut bytes, 128, 9999);
+        u32_into(&mut bytes, 128 + 4, 1); // SHT_PROGBITS
+        u64_into(&mut bytes, 128 + 24, 0);
+        u64_into(&mut bytes, 128 + 32, 0);
+
+        bytes.resize(193, 0);
+        let binary = parse(&bytes, bytes.len() as u64).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(binary.sections.len(), 2);
+        assert_eq!(binary.sections[1].name, "");
     }
 
     fn u16_into(bytes: &mut [u8], at: usize, value: u16) {

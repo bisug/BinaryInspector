@@ -1,6 +1,6 @@
 //! Safe bounded reads of command-line file targets.
 
-use std::{fs, io::Read, path::Path};
+use std::{fs, io::Read, path::Path, time::Duration};
 
 use crate::error::AppError;
 
@@ -8,7 +8,7 @@ const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Reads one regular, non-symlink file into an owned bounded buffer.
 pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, AppError> {
-    let mut file = open_target(path)?;
+    let file = open_target(path)?;
     let metadata = file.metadata()?;
     if metadata.file_type().is_symlink() {
         return Err(AppError::InvalidFileType(
@@ -29,14 +29,35 @@ pub fn read_regular_file(path: &Path) -> Result<Vec<u8>, AppError> {
     }
 
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.by_ref()
-        .take(MAX_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(AppError::FileTooLarge {
-            size: bytes.len() as u64,
-            limit: MAX_FILE_BYTES,
-        });
+    let mut take_reader = file.take(MAX_FILE_BYTES + 1);
+    let mut chunk = [0u8; 64 * 1024];
+    let mut would_block_retries = 0;
+    loop {
+        match take_reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                would_block_retries = 0;
+                bytes.extend_from_slice(&chunk[..n]);
+                if bytes.len() as u64 > MAX_FILE_BYTES {
+                    return Err(AppError::FileTooLarge {
+                        size: bytes.len() as u64,
+                        limit: MAX_FILE_BYTES,
+                    });
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if would_block_retries >= 100 {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "timed out waiting for non-blocking file read to complete",
+                    )));
+                }
+                would_block_retries += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(AppError::Io(e)),
+        }
     }
     Ok(bytes)
 }
