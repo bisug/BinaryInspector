@@ -1,6 +1,9 @@
 //! BinaryInspector command-line entry point.
 
-use std::process::ExitCode;
+use std::{
+    io::{self, Write},
+    process::ExitCode,
+};
 
 use clap::{Parser, error::ErrorKind};
 
@@ -49,16 +52,31 @@ fn main() -> ExitCode {
             };
             if cli.json {
                 match report::report_json(&binary) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => match writeln!(io::stdout(), "{json}") {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                            ExitCode::SUCCESS
+                        }
+                        Err(error) => {
+                            eprintln!("binary-inspector: {error}");
+                            ExitCode::from(2)
+                        }
+                    },
                     Err(error) => {
                         eprintln!("binary-inspector: JSON serialization failed: {error}");
-                        return ExitCode::from(3);
+                        ExitCode::from(3)
                     }
                 }
             } else {
-                print!("{}", report::report_human(&binary, options));
+                match write!(io::stdout(), "{}", report::report_human(&binary, options)) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("binary-inspector: {error}");
+                        ExitCode::from(2)
+                    }
+                }
             }
-            ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("binary-inspector: {error}");
