@@ -1,0 +1,31 @@
+name: Security audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  audit:
+    name: Audit crate advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.99.0
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - run: cargo audit
