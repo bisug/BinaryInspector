@@ -13,8 +13,9 @@ use binary_inspector::{
     inspect,
     model::{
         Binary, ElfNote, Hardening, PieStatus, Relocation, Relro, Section, SecurityMitigations,
-        Segment, Symbol, SymbolBinding, SymbolType,
+        Segment, Symbol, SymbolBinding, SymbolTableKind, SymbolType,
     },
+    report,
 };
 use eframe::egui;
 
@@ -30,11 +31,12 @@ fn main() -> eframe::Result {
             renderer: eframe::Renderer::Glow,
             viewport: egui::ViewportBuilder::default()
                 .with_title("BinaryInspector — Safe ELF Analysis")
-                .with_inner_size([1180.0, 800.0])
-                .with_min_inner_size([720.0, 480.0]),
+                .with_inner_size([1240.0, 820.0])
+                .with_min_inner_size([760.0, 500.0]),
             ..Default::default()
         },
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            configure_theme(&cc.egui_ctx);
             let mut app = Box::<InspectorApp>::default();
             if let Some(path) = initial_path {
                 app.inspect(path);
@@ -44,7 +46,81 @@ fn main() -> eframe::Result {
     )
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
+struct ThemeTokens;
+
+impl ThemeTokens {
+    pub const BG_CANVAS: egui::Color32 = egui::Color32::from_rgb(13, 16, 23); // #0d1017 Deep slate canvas
+    pub const BG_PANEL: egui::Color32 = egui::Color32::from_rgb(19, 23, 34); // #131722 Sidebar / header
+    pub const BG_SURFACE: egui::Color32 = egui::Color32::from_rgb(26, 32, 46); // #1a202e Elevated card
+    pub const BG_SURFACE_HOVER: egui::Color32 = egui::Color32::from_rgb(34, 43, 62); // #222b3e Hover state
+    pub const BG_INPUT: egui::Color32 = egui::Color32::from_rgb(16, 20, 28); // #10141c Code / input box
+
+    pub const BORDER_SUBTLE: egui::Color32 = egui::Color32::from_rgb(38, 47, 68); // #262f44
+    pub const BORDER_ACCENT: egui::Color32 = egui::Color32::from_rgb(79, 110, 247); // #4f6ef7
+    pub const BORDER_ACTIVE: egui::Color32 = egui::Color32::from_rgb(102, 131, 255); // #6683ff
+
+    pub const ACCENT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(79, 110, 247); // #4f6ef7 Sapphire
+    pub const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(102, 131, 255); // #6683ff
+
+    pub const SUCCESS: egui::Color32 = egui::Color32::from_rgb(34, 197, 94); // #22c55e Emerald
+    pub const WARNING: egui::Color32 = egui::Color32::from_rgb(245, 158, 11); // #f59e0b Amber
+    pub const DANGER: egui::Color32 = egui::Color32::from_rgb(239, 68, 68); // #ef4444 Crimson
+    pub const INFO: egui::Color32 = egui::Color32::from_rgb(56, 189, 248); // #38bdf8 Sky Blue
+
+    pub const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(241, 245, 249); // Slate-100
+    pub const TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(148, 163, 184); // Slate-400
+    pub const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(100, 116, 139); // Slate-500
+}
+
+fn configure_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = ThemeTokens::BG_PANEL;
+    visuals.window_fill = ThemeTokens::BG_CANVAS;
+    visuals.faint_bg_color = ThemeTokens::BG_SURFACE;
+    visuals.extreme_bg_color = ThemeTokens::BG_INPUT;
+    visuals.code_bg_color = egui::Color32::from_rgb(20, 25, 36);
+    visuals.override_text_color = Some(ThemeTokens::TEXT_PRIMARY);
+    visuals.selection.bg_fill = ThemeTokens::ACCENT_PRIMARY.gamma_multiply(0.35);
+    visuals.selection.stroke = egui::Stroke::new(1.0, ThemeTokens::ACCENT_HOVER);
+    visuals.hyperlink_color = ThemeTokens::INFO;
+    visuals.warn_fg_color = ThemeTokens::WARNING;
+    visuals.error_fg_color = ThemeTokens::DANGER;
+
+    visuals.widgets.noninteractive.bg_fill = ThemeTokens::BG_PANEL;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, ThemeTokens::TEXT_SECONDARY);
+    visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
+
+    visuals.widgets.inactive.bg_fill = ThemeTokens::BG_SURFACE;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE);
+    visuals.widgets.inactive.fg_stroke =
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(226, 232, 240));
+    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
+
+    visuals.widgets.hovered.bg_fill = ThemeTokens::BG_SURFACE_HOVER;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ThemeTokens::ACCENT_PRIMARY);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
+
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(45, 57, 80);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, ThemeTokens::ACCENT_HOVER);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
+
+    visuals.widgets.open.bg_fill = ThemeTokens::BG_SURFACE_HOVER;
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, ThemeTokens::ACCENT_PRIMARY);
+    visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
+
+    ctx.set_visuals(visuals);
+
+    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.indent = 16.0;
+    ctx.set_style_of(egui::Theme::Dark, style);
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum View {
     #[default]
     Overview,
@@ -57,7 +133,48 @@ enum View {
     Relocations,
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
+impl View {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Mitigations => "Mitigations",
+            Self::Symbols => "Symbols",
+            Self::Sections => "Sections",
+            Self::Segments => "Segments",
+            Self::Dependencies => "Dynamic & Deps",
+            Self::Notes => "Notes & Build",
+            Self::Relocations => "Relocations",
+        }
+    }
+
+    fn icon(&self) -> &'static str {
+        match self {
+            Self::Overview => "📊",
+            Self::Mitigations => "🛡️",
+            Self::Symbols => "🏷️",
+            Self::Sections => "📑",
+            Self::Segments => "📦",
+            Self::Dependencies => "🔗",
+            Self::Notes => "📝",
+            Self::Relocations => "🎯",
+        }
+    }
+
+    fn shortcut_hint(&self) -> &'static str {
+        match self {
+            Self::Overview => "Alt+1",
+            Self::Mitigations => "Alt+2",
+            Self::Symbols => "Alt+3",
+            Self::Sections => "Alt+4",
+            Self::Segments => "Alt+5",
+            Self::Dependencies => "Alt+6",
+            Self::Notes => "Alt+7",
+            Self::Relocations => "Alt+8",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SymbolFilter {
     #[default]
     All,
@@ -67,7 +184,15 @@ enum SymbolFilter {
     Exports,
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum TableFilter {
+    #[default]
+    All,
+    Dynamic,
+    Static,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SymbolSort {
     #[default]
     Index,
@@ -78,7 +203,7 @@ enum SymbolSort {
     Size,
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SectionSort {
     #[default]
     Index,
@@ -89,7 +214,7 @@ enum SectionSort {
     Entropy,
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SegmentSort {
     #[default]
     Index,
@@ -115,8 +240,8 @@ enum Inspection {
     },
 }
 
-const DEFAULT_SIDEBAR_WIDTH: f32 = 210.0;
-const DEFAULT_SECTION_COL_WIDTHS: [f32; 8] = [45.0, 160.0, 120.0, 80.0, 105.0, 85.0, 75.0, 70.0];
+const DEFAULT_SIDEBAR_WIDTH: f32 = 220.0;
+const DEFAULT_SECTION_COL_WIDTHS: [f32; 8] = [45.0, 160.0, 120.0, 80.0, 105.0, 85.0, 75.0, 80.0];
 const DEFAULT_SEGMENT_COL_WIDTHS: [f32; 8] = [45.0, 140.0, 80.0, 95.0, 115.0, 95.0, 95.0, 80.0];
 const DEFAULT_SYMBOL_COL_WIDTHS: [f32; 8] = [50.0, 220.0, 85.0, 80.0, 75.0, 105.0, 75.0, 70.0];
 const DEFAULT_RELOC_COL_WIDTHS: [f32; 5] = [105.0, 65.0, 220.0, 120.0, 75.0];
@@ -129,6 +254,7 @@ struct ViewState {
     segment_sort: SegmentSort,
     segment_sort_asc: bool,
     symbol_filter: SymbolFilter,
+    symbol_table_filter: TableFilter,
     symbol_sort: SymbolSort,
     symbol_sort_asc: bool,
     selected_symbol: Option<usize>,
@@ -143,6 +269,7 @@ struct ViewState {
     segment_col_widths: [f32; 8],
     selected_segment: Option<u16>,
     segment_detail_height: f32,
+    focus_search: bool,
 }
 
 impl Default for ViewState {
@@ -155,20 +282,22 @@ impl Default for ViewState {
             segment_sort: SegmentSort::Index,
             segment_sort_asc: true,
             symbol_filter: SymbolFilter::All,
+            symbol_table_filter: TableFilter::All,
             symbol_sort: SymbolSort::Index,
             symbol_sort_asc: true,
             selected_symbol: None,
-            symbol_detail_height: 175.0,
+            symbol_detail_height: 180.0,
             symbol_col_widths: DEFAULT_SYMBOL_COL_WIDTHS,
             reloc_col_widths: DEFAULT_RELOC_COL_WIDTHS,
             status_message: None,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             section_col_widths: DEFAULT_SECTION_COL_WIDTHS,
             selected_section: None,
-            section_detail_height: 175.0,
+            section_detail_height: 180.0,
             segment_col_widths: DEFAULT_SEGMENT_COL_WIDTHS,
             selected_segment: None,
-            segment_detail_height: 175.0,
+            segment_detail_height: 180.0,
+            focus_search: false,
         }
     }
 }
@@ -188,12 +317,9 @@ struct InspectorApp {
 
 impl InspectorApp {
     fn inspect(&mut self, path: PathBuf) {
-        // An in-flight inspection is abandoned rather than blocked: replacing the
-        // state drops the old receiver, so the (bounded) worker result is discarded
-        // and a new file can be opened immediately.
         if !self.recent_files.contains(&path) {
             self.recent_files.insert(0, path.clone());
-            if self.recent_files.len() > 6 {
+            if self.recent_files.len() > 8 {
                 self.recent_files.pop();
             }
         }
@@ -213,9 +339,54 @@ impl InspectorApp {
         self.view_state.selected_segment = None;
     }
 
+    fn reload_current(&mut self) {
+        if let Inspection::Ready { path, .. } = &self.inspection {
+            let p = path.clone();
+            self.inspect(p);
+            self.view_state.set_status("Re-inspected binary");
+        }
+    }
+
+    fn export_json(&mut self) {
+        let json_opt = match &self.inspection {
+            Inspection::Ready { binary, .. } => report::report_json(binary).ok(),
+            _ => None,
+        };
+        if let Some(json) = json_opt {
+            let dialog = rfd::FileDialog::new()
+                .set_title("Export Binary Inspection Report (JSON)")
+                .set_file_name("binary-report.json");
+            if let Some(path) = dialog.save_file() {
+                match std::fs::write(&path, json) {
+                    Ok(()) => self
+                        .view_state
+                        .set_status(format!("Exported to {}", path.display())),
+                    Err(e) => self.view_state.set_status(format!("Export failed: {e}")),
+                }
+            }
+        }
+    }
+
+    fn copy_json(&mut self, ctx: &egui::Context) {
+        let json_opt = match &self.inspection {
+            Inspection::Ready { binary, .. } => report::report_json(binary).ok(),
+            _ => None,
+        };
+        if let Some(json) = json_opt {
+            ctx.copy_text(json);
+            self.view_state
+                .set_status("JSON report copied to clipboard");
+        }
+    }
+
+    fn clear_recents(&mut self) {
+        self.recent_files.clear();
+        self.view_state.set_status("Recent binary history cleared");
+    }
+
     fn poll(&mut self, context: &egui::Context) {
         if matches!(&self.inspection, Inspection::Loading(_)) {
-            context.request_repaint_after(Duration::from_millis(50));
+            context.request_repaint_after(Duration::from_millis(40));
         }
 
         let result = match &self.inspection {
@@ -226,8 +397,11 @@ impl InspectorApp {
         if let Some((path, inspect_result)) = result {
             match inspect_result {
                 Ok(binary) => {
-                    self.view_state
-                        .set_status(format!("Loaded {}", path.display()));
+                    let file_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Binary".to_string());
+                    self.view_state.set_status(format!("Loaded {file_name}"));
                     self.inspection = Inspection::Ready {
                         path,
                         binary: Box::new(binary),
@@ -255,14 +429,52 @@ impl eframe::App for InspectorApp {
         self.poll(&context);
 
         // Global shortcuts
-        let (open_pressed, esc_pressed) = context.input(|input| {
-            let open = input.modifiers.command && input.key_pressed(egui::Key::O);
-            let esc = input.key_pressed(egui::Key::Escape);
-            (open, esc)
-        });
+        let (open_pressed, reload_pressed, esc_pressed, alt_view, ctrl_f) =
+            context.input(|input| {
+                let open = input.modifiers.command && input.key_pressed(egui::Key::O);
+                let reload = input.key_pressed(egui::Key::F5)
+                    || (input.modifiers.command && input.key_pressed(egui::Key::R));
+                let esc = input.key_pressed(egui::Key::Escape);
+                let ctrl_f = input.modifiers.command && input.key_pressed(egui::Key::F);
+
+                let alt_view = if input.modifiers.alt {
+                    if input.key_pressed(egui::Key::Num1) {
+                        Some(View::Overview)
+                    } else if input.key_pressed(egui::Key::Num2) {
+                        Some(View::Mitigations)
+                    } else if input.key_pressed(egui::Key::Num3) {
+                        Some(View::Symbols)
+                    } else if input.key_pressed(egui::Key::Num4) {
+                        Some(View::Sections)
+                    } else if input.key_pressed(egui::Key::Num5) {
+                        Some(View::Segments)
+                    } else if input.key_pressed(egui::Key::Num6) {
+                        Some(View::Dependencies)
+                    } else if input.key_pressed(egui::Key::Num7) {
+                        Some(View::Notes)
+                    } else if input.key_pressed(egui::Key::Num8) {
+                        Some(View::Relocations)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                (open, reload, esc, alt_view, ctrl_f)
+            });
 
         if open_pressed {
             self.choose_file();
+        }
+        if reload_pressed {
+            self.reload_current();
+        }
+        if ctrl_f {
+            self.view_state.focus_search = true;
+        }
+        if let Some(view) = alt_view {
+            self.view_state.view = view;
         }
         if esc_pressed {
             if self.view_state.selected_section.is_some() {
@@ -302,97 +514,196 @@ impl eframe::App for InspectorApp {
 impl InspectorApp {
     fn render_main_ui(&mut self, ui: &mut egui::Ui, is_hovering: bool) {
         let mut choose_file = false;
+        let mut reload_file = false;
         let mut unload_file = false;
         let mut cancel_load = false;
+        let mut export_json_req = false;
+        let mut copy_json_req = false;
 
         // Top Control Bar
-        ui.horizontal(|ui| {
-            ui.heading(
-                egui::RichText::new("🔬 BinaryInspector")
-                    .strong()
-                    .color(egui::Color32::from_rgb(110, 110, 240)),
-            );
+        let top_frame = egui::Frame::new()
+            .fill(ThemeTokens::BG_PANEL)
+            .inner_margin(egui::Margin::symmetric(14, 10));
 
-            ui.separator();
+        top_frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
 
-            match &self.inspection {
-                Inspection::Ready { path, binary } => {
-                    let file_name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Binary".to_string());
+                // Brand Mark
+                ui.label(
+                    egui::RichText::new("🔬")
+                        .size(19.0)
+                        .color(ThemeTokens::ACCENT_PRIMARY),
+                );
+                ui.label(
+                    egui::RichText::new("BinaryInspector")
+                        .strong()
+                        .size(16.0)
+                        .color(ThemeTokens::TEXT_PRIMARY),
+                );
 
-                    ui.label(egui::RichText::new(&file_name).strong().monospace());
-                    ui.small(format_bytes(binary.file.size_bytes));
-                    if ui
-                        .small_button("✕")
-                        .on_hover_text("Close binary (Esc)")
-                        .clicked()
-                    {
-                        unload_file = true;
+                badge(ui, "v0.3.0", ThemeTokens::TEXT_MUTED);
+
+                ui.separator();
+
+                match &self.inspection {
+                    Inspection::Ready { path, binary } => {
+                        let file_name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Binary".to_string());
+
+                        let pill = egui::Frame::new()
+                            .fill(ThemeTokens::BG_SURFACE)
+                            .corner_radius(egui::CornerRadius::same(5))
+                            .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                            .inner_margin(egui::Margin::symmetric(8, 4));
+
+                        pill.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&file_name)
+                                        .strong()
+                                        .monospace()
+                                        .size(13.0)
+                                        .color(ThemeTokens::TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format_bytes(binary.file.size_bytes))
+                                        .size(11.5)
+                                        .color(ThemeTokens::TEXT_MUTED),
+                                );
+                                if ui
+                                    .small_button("✕")
+                                    .on_hover_text("Close binary (Esc)")
+                                    .clicked()
+                                {
+                                    unload_file = true;
+                                }
+                            });
+                        });
+
+                        if ui
+                            .button(egui::RichText::new("↻ Reload").size(12.5))
+                            .on_hover_text("Re-inspect binary from disk (F5 / Ctrl+R)")
+                            .clicked()
+                        {
+                            reload_file = true;
+                        }
+
+                        if ui
+                            .button(egui::RichText::new("📤 Export JSON").size(12.5))
+                            .on_hover_text("Save full inspection report to a JSON file")
+                            .clicked()
+                        {
+                            export_json_req = true;
+                        }
+
+                        if ui
+                            .button(egui::RichText::new("📋 Copy JSON").size(12.5))
+                            .on_hover_text("Copy report JSON to clipboard")
+                            .clicked()
+                        {
+                            copy_json_req = true;
+                        }
                     }
+                    Inspection::Loading(_) => {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Inspecting binary safely…")
+                                .color(ThemeTokens::TEXT_SECONDARY),
+                        );
+                    }
+                    _ => {}
                 }
-                Inspection::Loading(_) => {
-                    ui.spinner();
-                    ui.label("Inspecting…");
-                }
-                _ => {}
-            }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button(egui::RichText::new("📂 Open Binary (Ctrl+O)").strong())
-                    .clicked()
-                {
-                    choose_file = true;
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let open_btn = egui::Button::new(
+                        egui::RichText::new("📂 Open Binary (Ctrl+O)")
+                            .strong()
+                            .size(13.0)
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(ThemeTokens::ACCENT_PRIMARY)
+                    .corner_radius(egui::CornerRadius::same(6));
+
+                    if ui.add(open_btn).clicked() {
+                        choose_file = true;
+                    }
+                });
             });
         });
 
         if choose_file {
             self.choose_file();
         }
+        if reload_file {
+            self.reload_current();
+        }
         if unload_file {
             self.inspection = Inspection::Empty;
             self.view_state.search_query.clear();
+            self.view_state.set_status("Binary closed");
+        }
+        if export_json_req {
+            self.export_json();
+        }
+        if copy_json_req {
+            let ctx = ui.ctx().clone();
+            self.copy_json(&ctx);
         }
 
-        ui.separator();
-
-        // Central Area bounded
+        // Central Area
         if is_hovering {
             render_drop_overlay(ui);
             return;
         }
 
-        let central_height = (ui.available_height() - 28.0).max(100.0);
+        let central_height = (ui.available_height() - 32.0).max(120.0);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), central_height),
             egui::Layout::top_down(egui::Align::LEFT),
             |ui| match &self.inspection {
                 Inspection::Empty => {
                     let mut sample_to_load = None;
-                    self.render_empty_state(ui, &mut sample_to_load, &mut choose_file);
+                    let mut clear_recents_req = false;
+                    self.render_empty_state(
+                        ui,
+                        &mut sample_to_load,
+                        &mut choose_file,
+                        &mut clear_recents_req,
+                    );
                     if let Some(path) = sample_to_load {
                         self.inspect(path);
                     }
                     if choose_file {
                         self.choose_file();
                     }
+                    if clear_recents_req {
+                        self.clear_recents();
+                    }
                 }
                 Inspection::Loading(_) => {
                     ui.centered_and_justified(|ui| {
                         ui.vertical_centered(|ui| {
                             ui.spinner();
-                            ui.add_space(10.0);
+                            ui.add_space(14.0);
                             ui.label(
-                                egui::RichText::new("Inspecting binary safely…")
-                                    .size(16.0)
-                                    .color(ui.visuals().weak_text_color()),
+                                egui::RichText::new("Parsing ELF Structures Safely…")
+                                    .size(17.0)
+                                    .strong()
+                                    .color(ThemeTokens::TEXT_PRIMARY),
                             );
-                            ui.small("Parsing ELF headers, symbols, notes, and security metadata");
-                            ui.add_space(12.0);
-                            if ui.button("Cancel").clicked() {
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "Analyzing headers, symbols, notes, relocations, and security mitigations",
+                                )
+                                .size(13.0)
+                                .color(ThemeTokens::TEXT_SECONDARY),
+                            );
+                            ui.add_space(16.0);
+                            if ui.button("Cancel Inspection").clicked() {
                                 cancel_load = true;
                             }
                         });
@@ -417,47 +728,71 @@ impl InspectorApp {
         }
 
         // Bottom Status Bar
-        ui.separator();
-        ui.horizontal(|ui| {
-            if let Some((msg, time)) = &self.view_state.status_message
-                && time.elapsed() < Duration::from_secs(3)
-            {
-                ui.label(
-                    egui::RichText::new(format!("✓ {msg}"))
-                        .color(egui::Color32::from_rgb(70, 180, 100))
-                        .strong(),
-                );
-                ui.separator();
-            }
+        let status_frame = egui::Frame::new()
+            .fill(ThemeTokens::BG_PANEL)
+            .inner_margin(egui::Margin::symmetric(14, 6));
 
-            match &self.inspection {
-                Inspection::Ready { binary, .. } => {
-                    ui.label(format!("Class: {}", binary.elf.class));
-                    ui.separator();
-                    ui.label(format!("ISA: {}", binary.elf.machine));
-                    ui.separator();
-                    ui.label(format!("Sections: {}", binary.sections.len()));
-                    ui.separator();
-                    ui.label(format!("Symbols: {}", binary.symbols.len()));
-                    ui.separator();
-                    ui.label(format!("RELRO: {}", binary.mitigations.relro));
-                    ui.separator();
-                    ui.label(format!("NX: {}", binary.mitigations.nx));
-                }
-                _ => {
-                    ui.label(egui::RichText::new("Ready").color(ui.visuals().weak_text_color()));
-                }
-            }
+        status_frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new("🛡️ Local analysis only — binary never executed")
-                        .size(11.0)
-                        .color(ui.visuals().weak_text_color()),
-                );
+                if let Some((msg, time)) = &self.view_state.status_message
+                    && time.elapsed() < Duration::from_secs(3)
+                {
+                    ui.label(
+                        egui::RichText::new(format!("✓ {msg}"))
+                            .color(ThemeTokens::SUCCESS)
+                            .strong()
+                            .size(12.0),
+                    );
+                    ui.separator();
+                } else {
+                    ui.label(
+                        egui::RichText::new("Ready")
+                            .color(ThemeTokens::TEXT_MUTED)
+                            .size(12.0),
+                    );
+                    ui.separator();
+                }
+
+                if let Inspection::Ready { binary, .. } = &self.inspection {
+                    status_chip(ui, &format!("{}", binary.elf.class));
+                    status_chip(ui, &format!("{}", binary.elf.machine));
+                    status_chip(ui, &format!("{}", binary.elf.endianness));
+                    status_chip(ui, &format!("{}", binary.elf.elf_type));
+                    ui.separator();
+                    ui.small(format!("Sections: {}", binary.sections.len()));
+                    ui.small(format!("Symbols: {}", binary.symbols.len()));
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("🛡️ Local analysis only — binary never executed")
+                            .size(11.5)
+                            .color(ThemeTokens::TEXT_MUTED),
+                    )
+                    .on_hover_text(
+                        "BinaryInspector parses binary headers and structures locally in safe memory without executing instructions.",
+                    );
+                });
             });
         });
     }
+}
+
+fn status_chip(ui: &mut egui::Ui, text: &str) {
+    let frame = egui::Frame::new()
+        .fill(ThemeTokens::BG_SURFACE)
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(6, 2));
+
+    frame.show(ui, |ui| {
+        ui.label(
+            egui::RichText::new(text)
+                .size(11.5)
+                .color(ThemeTokens::TEXT_SECONDARY),
+        );
+    });
 }
 
 impl InspectorApp {
@@ -466,78 +801,106 @@ impl InspectorApp {
         ui: &mut egui::Ui,
         sample_to_load: &mut Option<PathBuf>,
         choose_file: &mut bool,
+        clear_recents: &mut bool,
     ) {
         ui.vertical_centered(|ui| {
-            ui.add_space(60.0);
+            ui.add_space(48.0);
 
             let hero_frame = egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
+                .fill(ThemeTokens::BG_SURFACE)
                 .corner_radius(egui::CornerRadius::same(12))
-                .stroke(egui::Stroke::new(
-                    1.5,
-                    egui::Color32::from_rgb(91, 91, 214).gamma_multiply(0.4),
-                ))
-                .inner_margin(egui::Margin::symmetric(36, 28));
+                .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                .inner_margin(egui::Margin::symmetric(40, 32));
 
             hero_frame.show(ui, |ui| {
-                ui.set_max_width(520.0);
+                ui.set_max_width(560.0);
 
                 ui.label(
-                    egui::RichText::new("📁")
-                        .size(44.0)
-                        .color(egui::Color32::from_rgb(91, 91, 214)),
+                    egui::RichText::new("⚡")
+                        .size(42.0)
+                        .color(ThemeTokens::ACCENT_PRIMARY),
                 );
-                ui.add_space(10.0);
-                ui.heading(egui::RichText::new("Inspect an ELF Binary").size(22.0));
+                ui.add_space(8.0);
+                ui.heading(
+                    egui::RichText::new("Inspect an ELF Binary")
+                        .size(23.0)
+                        .color(ThemeTokens::TEXT_PRIMARY),
+                );
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
-                        "Drag and drop any ELF executable, library, or core dump into this window.\nBinaryInspector analyzes local structure, symbols, and security mitigations.",
+                        "Drag and drop any Linux/Unix ELF executable, shared library, or object file.\nBinaryInspector safely extracts header structure, security mitigations, symbols, and entropy.",
                     )
-                    .color(ui.visuals().weak_text_color())
+                    .color(ThemeTokens::TEXT_SECONDARY)
                     .size(13.5),
                 );
 
                 ui.add_space(20.0);
-                if ui
-                    .button(
-                        egui::RichText::new("  Choose ELF Binary (Ctrl+O)  ")
-                            .strong()
-                            .size(15.0),
-                    )
-                    .clicked()
-                {
+
+                let btn = egui::Button::new(
+                    egui::RichText::new("  Choose ELF Binary (Ctrl+O)  ")
+                        .strong()
+                        .size(14.5)
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(ThemeTokens::ACCENT_PRIMARY)
+                .corner_radius(egui::CornerRadius::same(6));
+
+                if ui.add(btn).clicked() {
                     *choose_file = true;
                 }
             });
 
             // Quick Samples Section
-            let samples_dir = Path::new("samples");
-            if samples_dir.exists() {
-                ui.add_space(32.0);
+            let mut sample_candidates: Vec<(&'static str, PathBuf)> = Vec::new();
+            for (label, path_str) in [
+                ("dynamic-c-binary", "samples/dynamic-c-binary"),
+                ("minimal-static", "samples/minimal-static"),
+                ("custom-sections", "samples/custom-sections"),
+                ("with-rpath-runpath", "samples/with-rpath-runpath"),
+            ] {
+                let p = PathBuf::from(path_str);
+                if p.exists() {
+                    sample_candidates.push((label, p));
+                }
+            }
+
+            #[cfg(unix)]
+            {
+                for (label, path_str) in [
+                    ("/bin/ls", "/bin/ls"),
+                    ("/bin/sh", "/bin/sh"),
+                    ("/usr/bin/env", "/usr/bin/env"),
+                ] {
+                    let p = PathBuf::from(path_str);
+                    if p.exists() && !sample_candidates.iter().any(|(_, sp)| sp == &p) {
+                        sample_candidates.push((label, p));
+                    }
+                }
+            }
+
+            if !sample_candidates.is_empty() {
+                ui.add_space(28.0);
                 ui.label(
                     egui::RichText::new("OR TRY A SAMPLE BINARY")
                         .strong()
                         .size(11.0)
-                        .color(ui.visuals().weak_text_color()),
+                        .color(ThemeTokens::TEXT_MUTED),
                 );
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    let samples = [
-                        ("dynamic-c-binary", "samples/dynamic-c-binary"),
-                        ("minimal-static", "samples/minimal-static"),
-                        ("custom-sections", "samples/custom-sections"),
-                        ("with-rpath-runpath", "samples/with-rpath-runpath"),
-                    ];
-                    for (label, path_str) in samples {
-                        let path = PathBuf::from(path_str);
-                        if path.exists()
-                            && ui
-                                .button(egui::RichText::new(format!("📄 {label}")).monospace())
-                                .clicked()
-                        {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for (label, path) in sample_candidates {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(format!("📄 {label}"))
+                                .monospace()
+                                .size(12.5),
+                        )
+                        .fill(ThemeTokens::BG_SURFACE)
+                        .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE));
+
+                        if ui.add(btn).clicked() {
                             *sample_to_load = Some(path);
                         }
                     }
@@ -545,26 +908,67 @@ impl InspectorApp {
             }
 
             if !self.recent_files.is_empty() {
-                ui.add_space(24.0);
-                ui.label(
-                    egui::RichText::new("RECENT BINARIES")
-                        .strong()
-                        .size(11.0)
-                        .color(ui.visuals().weak_text_color()),
-                );
+                ui.add_space(28.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("RECENT BINARIES")
+                            .strong()
+                            .size(11.0)
+                            .color(ThemeTokens::TEXT_MUTED),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(
+                                egui::RichText::new("Clear History")
+                                    .size(11.0)
+                                    .color(ThemeTokens::TEXT_MUTED),
+                            )
+                            .clicked()
+                        {
+                            *clear_recents = true;
+                        }
+                    });
+                });
                 ui.add_space(6.0);
-                for path in &self.recent_files {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.display().to_string());
-                    if ui
-                        .link(egui::RichText::new(format!("🕒 {name}")).monospace())
-                        .clicked()
-                    {
-                        *sample_to_load = Some(path.clone());
+
+                let recent_box = egui::Frame::new()
+                    .fill(ThemeTokens::BG_PANEL)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(16, 10));
+
+                recent_box.show(ui, |ui| {
+                    ui.set_max_width(560.0);
+                    for path in &self.recent_files {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.display().to_string());
+                        ui.horizontal(|ui| {
+                            ui.label("🕒");
+                            if ui
+                                .link(
+                                    egui::RichText::new(&name)
+                                        .strong()
+                                        .monospace()
+                                        .color(ThemeTokens::ACCENT_HOVER),
+                                )
+                                .on_hover_text(path.display().to_string())
+                                .clicked()
+                            {
+                                *sample_to_load = Some(path.clone());
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if let Ok(meta) = std::fs::metadata(path) {
+                                        ui.small(format_bytes(meta.len()));
+                                    }
+                                },
+                            );
+                        });
                     }
-                }
+                });
             }
         });
     }
@@ -577,41 +981,70 @@ fn render_failed_state(ui: &mut egui::Ui, path: &Path, error: &AppError, choose_
         ui.vertical_centered(|ui| {
             ui.label(
                 egui::RichText::new("⚠️")
-                    .size(48.0)
-                    .color(egui::Color32::from_rgb(230, 80, 80)),
+                    .size(46.0)
+                    .color(ThemeTokens::DANGER),
             );
-            ui.add_space(10.0);
+            ui.add_space(8.0);
             ui.heading(
-                egui::RichText::new("Failed to Inspect Binary")
-                    .color(egui::Color32::from_rgb(230, 80, 80)),
+                egui::RichText::new("Inspection Failed")
+                    .size(22.0)
+                    .color(ThemeTokens::DANGER),
             );
-            ui.add_space(6.0);
-            ui.label(path.display().to_string());
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(path.display().to_string())
+                    .monospace()
+                    .color(ThemeTokens::TEXT_MUTED),
+            );
             ui.add_space(16.0);
 
             let error_box = egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
+                .fill(ThemeTokens::BG_SURFACE)
                 .corner_radius(egui::CornerRadius::same(8))
-                .inner_margin(egui::Margin::symmetric(24, 16));
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ThemeTokens::DANGER.gamma_multiply(0.5),
+                ))
+                .inner_margin(egui::Margin::symmetric(24, 18));
 
             error_box.show(ui, |ui| {
+                ui.set_max_width(520.0);
                 ui.label(
                     egui::RichText::new(category)
                         .strong()
-                        .color(egui::Color32::from_rgb(230, 100, 100)),
+                        .size(15.0)
+                        .color(ThemeTokens::DANGER),
                 );
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(hint).color(ui.visuals().weak_text_color()));
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new(error.to_string())
-                        .color(egui::Color32::from_rgb(230, 80, 80))
-                        .monospace(),
+                    egui::RichText::new(hint)
+                        .size(13.0)
+                        .color(ThemeTokens::TEXT_SECONDARY),
                 );
+                ui.add_space(10.0);
+                let err_pre = egui::Frame::new()
+                    .fill(ThemeTokens::BG_INPUT)
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(10, 8));
+                err_pre.show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(error.to_string())
+                            .color(ThemeTokens::DANGER)
+                            .monospace()
+                            .size(12.0),
+                    );
+                });
             });
 
             ui.add_space(20.0);
-            if ui.button("Choose another binary").clicked() {
+            if ui
+                .button(
+                    egui::RichText::new("  Choose Another Binary  ")
+                        .strong()
+                        .size(13.5),
+                )
+                .clicked()
+            {
                 *choose_file = true;
             }
         });
@@ -629,85 +1062,127 @@ impl ViewState {
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
                     ui.set_width(self.sidebar_width);
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
 
                     let nav_item = |ui: &mut egui::Ui,
                                     current_view: &mut View,
                                     target: View,
-                                    icon: &str,
-                                    label: &str,
                                     badge_count: Option<usize>| {
                         let is_active = *current_view == target;
-                        let text = if let Some(count) = badge_count {
-                            format!("{icon} {label} ({count})")
-                        } else {
-                            format!("{icon} {label}")
-                        };
+                        let frame = egui::Frame::new()
+                            .fill(if is_active {
+                                ThemeTokens::BG_SURFACE_HOVER
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                if is_active {
+                                    ThemeTokens::BORDER_ACCENT
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                },
+                            ))
+                            .inner_margin(egui::Margin::symmetric(10, 7));
 
-                        let response = ui.selectable_label(
-                            is_active,
-                            egui::RichText::new(text).size(13.5).strong(),
-                        );
-                        if response.clicked() {
+                        let resp = frame
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(target.icon()).size(14.0));
+                                    ui.label(
+                                        egui::RichText::new(target.label())
+                                            .size(13.0)
+                                            .strong()
+                                            .color(if is_active {
+                                                ThemeTokens::TEXT_PRIMARY
+                                            } else {
+                                                ThemeTokens::TEXT_SECONDARY
+                                            }),
+                                    );
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if let Some(count) = badge_count {
+                                                let count_str = if count > 999 {
+                                                    format!("{:.1}k", count as f64 / 1000.0)
+                                                } else {
+                                                    count.to_string()
+                                                };
+                                                let badge_bg = if is_active {
+                                                    ThemeTokens::ACCENT_PRIMARY.gamma_multiply(0.25)
+                                                } else {
+                                                    ThemeTokens::BG_SURFACE
+                                                };
+                                                let badge_txt = if is_active {
+                                                    ThemeTokens::ACCENT_HOVER
+                                                } else {
+                                                    ThemeTokens::TEXT_MUTED
+                                                };
+
+                                                let pill = egui::Frame::new()
+                                                    .fill(badge_bg)
+                                                    .corner_radius(egui::CornerRadius::same(10))
+                                                    .inner_margin(egui::Margin::symmetric(6, 2));
+                                                pill.show(ui, |ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(count_str)
+                                                            .size(10.5)
+                                                            .monospace()
+                                                            .color(badge_txt),
+                                                    );
+                                                });
+                                            }
+                                        },
+                                    );
+                                });
+                            })
+                            .response;
+
+                        if resp
+                            .on_hover_text(format!(
+                                "Switch to {} ({})",
+                                target.label(),
+                                target.shortcut_hint()
+                            ))
+                            .clicked()
+                        {
                             *current_view = target;
                         }
                     };
 
-                    nav_item(ui, &mut self.view, View::Overview, "📊", "Overview", None);
-                    nav_item(
-                        ui,
-                        &mut self.view,
-                        View::Mitigations,
-                        "🛡️",
-                        "Mitigations",
-                        None,
-                    );
+                    nav_item(ui, &mut self.view, View::Overview, None);
+                    nav_item(ui, &mut self.view, View::Mitigations, None);
                     nav_item(
                         ui,
                         &mut self.view,
                         View::Symbols,
-                        "🏷️",
-                        "Symbols",
                         Some(binary.symbols.len()),
                     );
                     nav_item(
                         ui,
                         &mut self.view,
                         View::Sections,
-                        "📑",
-                        "Sections",
                         Some(binary.sections.len()),
                     );
                     nav_item(
                         ui,
                         &mut self.view,
                         View::Segments,
-                        "📦",
-                        "Segments",
                         Some(binary.segments.len()),
                     );
                     nav_item(
                         ui,
                         &mut self.view,
                         View::Dependencies,
-                        "🔗",
-                        "Dynamic & Deps",
                         Some(binary.dynamic.needed.len()),
                     );
-                    nav_item(
-                        ui,
-                        &mut self.view,
-                        View::Notes,
-                        "📝",
-                        "Notes & Build",
-                        Some(binary.notes.len()),
-                    );
+                    nav_item(ui, &mut self.view, View::Notes, Some(binary.notes.len()));
                     nav_item(
                         ui,
                         &mut self.view,
                         View::Relocations,
-                        "🎯",
-                        "Relocations",
                         Some(binary.relocations.len()),
                     );
 
@@ -715,23 +1190,41 @@ impl ViewState {
                     ui.separator();
                     ui.add_space(8.0);
 
-                    // Quick Target Details Card
-                    ui.label(
-                        egui::RichText::new("TARGET")
-                            .strong()
-                            .size(10.0)
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                    let file_name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Binary".to_string());
-                    ui.label(egui::RichText::new(file_name).strong());
-                    ui.small(format_bytes(binary.file.size_bytes));
-                    if ui.small_button("📋 Copy Path").clicked() {
-                        ui.ctx().copy_text(path.display().to_string());
-                        self.set_status("Path copied to clipboard");
-                    }
+                    // Target Card
+                    let target_card = egui::Frame::new()
+                        .fill(ThemeTokens::BG_SURFACE)
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                        .inner_margin(egui::Margin::symmetric(10, 10));
+
+                    target_card.show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("ANALYSIS TARGET")
+                                .strong()
+                                .size(10.0)
+                                .color(ThemeTokens::TEXT_MUTED),
+                        );
+                        let file_name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Binary".to_string());
+                        ui.label(
+                            egui::RichText::new(file_name)
+                                .strong()
+                                .size(13.0)
+                                .color(ThemeTokens::TEXT_PRIMARY),
+                        );
+                        ui.small(format_bytes(binary.file.size_bytes));
+                        ui.add_space(4.0);
+                        if ui.small_button("📋 Copy Path").clicked() {
+                            ui.ctx().copy_text(path.display().to_string());
+                            self.set_status("Path copied to clipboard");
+                        }
+                        if ui.small_button("📋 Copy Hash").clicked() {
+                            ui.ctx().copy_text(binary.hashes.sha256.clone());
+                            self.set_status("SHA-256 hash copied");
+                        }
+                    });
                 },
             );
 
@@ -743,22 +1236,22 @@ impl ViewState {
             }
             if splitter_resp.dragged() {
                 self.sidebar_width =
-                    (self.sidebar_width + splitter_resp.drag_delta().x).clamp(150.0, 450.0);
+                    (self.sidebar_width + splitter_resp.drag_delta().x).clamp(160.0, 480.0);
             }
             if splitter_resp.double_clicked() {
                 self.sidebar_width = DEFAULT_SIDEBAR_WIDTH;
             }
             let splitter_color = if splitter_resp.dragged() {
-                egui::Color32::from_rgb(91, 91, 214)
+                ThemeTokens::BORDER_ACTIVE
             } else if splitter_resp.hovered() {
-                egui::Color32::from_rgb(140, 140, 230)
+                ThemeTokens::ACCENT_HOVER
             } else {
-                ui.visuals().widgets.noninteractive.bg_stroke.color
+                ThemeTokens::BORDER_SUBTLE
             };
             ui.painter().vline(
                 splitter_rect.center().x,
                 splitter_rect.y_range(),
-                egui::Stroke::new(1.5, splitter_color),
+                egui::Stroke::new(1.0, splitter_color),
             );
 
             // 3. Main Content Area
@@ -776,11 +1269,184 @@ impl ViewState {
     }
 
     fn render_overview(&mut self, ui: &mut egui::Ui, path: &Path, binary: &Binary) {
-        ui.heading("Binary Overview");
+        ui.horizontal(|ui| {
+            ui.heading(
+                egui::RichText::new("Binary Overview")
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(egui::RichText::new("🛡️ Mitigations Dashboard (Alt+2)").size(12.0))
+                    .clicked()
+                {
+                    self.view = View::Mitigations;
+                }
+            });
+        });
+
         ui.add_space(8.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // Card 1: File Identity & Hashes
+            // Card 1: Executive Security Hardening Scorecard
+            let score_frame = egui::Frame::new()
+                .fill(ThemeTokens::BG_SURFACE)
+                .corner_radius(egui::CornerRadius::same(8))
+                .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                .inner_margin(egui::Margin::symmetric(18, 14));
+
+            score_frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(
+                        egui::RichText::new("🛡️ Security Protections Scorecard (checksec)")
+                            .size(15.0),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if binary.mitigations.rwx_segments > 0 {
+                            badge(ui, "⚠️ W^X VIOLATION", ThemeTokens::DANGER);
+                        } else if binary.mitigations.relro == Relro::Full
+                            && binary.mitigations.stack_canary == Hardening::Enabled
+                            && binary.mitigations.nx == Hardening::Enabled
+                            && binary.mitigations.pie == PieStatus::Pie
+                        {
+                            badge(ui, "✓ FULLY HARDENED", ThemeTokens::SUCCESS);
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+
+                    // RELRO
+                    let (relro_txt, relro_col) = match binary.mitigations.relro {
+                        Relro::Full => ("Full RELRO", ThemeTokens::SUCCESS),
+                        Relro::Partial => ("Partial RELRO", ThemeTokens::WARNING),
+                        Relro::None => ("No RELRO", ThemeTokens::DANGER),
+                        Relro::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED),
+                    };
+                    if scorecard_item(ui, "RELRO", relro_txt, relro_col, "🔒", "Relocation Read-Only: protects Global Offset Table from tampering") {
+                        self.view = View::Mitigations;
+                    }
+
+                    // Stack Canary
+                    let (can_txt, can_col) = match binary.mitigations.stack_canary {
+                        Hardening::Enabled => ("Canary Found", ThemeTokens::SUCCESS),
+                        Hardening::Disabled => ("No Canary", ThemeTokens::DANGER),
+                        Hardening::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED),
+                    };
+                    if scorecard_item(ui, "Stack Canary", can_txt, can_col, "🐤", "Stack smashing protection: detects buffer overflows before return") {
+                        self.view = View::Mitigations;
+                    }
+
+                    // NX
+                    let (nx_txt, nx_col) = match binary.mitigations.nx {
+                        Hardening::Enabled => ("NX Enabled", ThemeTokens::SUCCESS),
+                        Hardening::Disabled => ("NX Disabled", ThemeTokens::DANGER),
+                        Hardening::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED),
+                    };
+                    if scorecard_item(ui, "NX / DEP", nx_txt, nx_col, "🚫", "Non-Executable Stack: prevents direct shellcode execution in data pages") {
+                        self.view = View::Mitigations;
+                    }
+
+                    // PIE
+                    let (pie_txt, pie_col) = match binary.mitigations.pie {
+                        PieStatus::Pie => ("PIE Enabled", ThemeTokens::SUCCESS),
+                        PieStatus::Dso => ("DSO / Shared", ThemeTokens::INFO),
+                        PieStatus::NoPie => ("No PIE", ThemeTokens::WARNING),
+                        PieStatus::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED),
+                    };
+                    if scorecard_item(ui, "PIE / ASLR", pie_txt, pie_col, "🎲", "Position-Independent Executable: full address space layout randomization") {
+                        self.view = View::Mitigations;
+                    }
+
+                    // Fortify
+                    let (fort_txt, fort_col) = match binary.mitigations.fortify {
+                        Hardening::Enabled => (
+                            "Fortified",
+                            ThemeTokens::SUCCESS,
+                        ),
+                        Hardening::Disabled => ("None Detected", ThemeTokens::TEXT_MUTED),
+                        Hardening::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED),
+                    };
+                    if scorecard_item(ui, "FORTIFY", fort_txt, fort_col, "🛡️", "Compile-time & run-time bounds checks on buffer/string libc calls") {
+                        self.view = View::Mitigations;
+                    }
+
+                    // W^X Policy
+                    let (wx_txt, wx_col) = if binary.mitigations.rwx_segments == 0 {
+                        ("Enforced (0 RWX)", ThemeTokens::SUCCESS)
+                    } else {
+                        ("VIOLATION", ThemeTokens::DANGER)
+                    };
+                    if scorecard_item(ui, "W^X Memory", wx_txt, wx_col, "⚡", "Write XOR Execute: guarantees memory is never simultaneously writable and executable") {
+                        self.view = View::Mitigations;
+                    }
+
+                    // RPATH
+                    let (rpath_txt, rpath_col) = if binary.mitigations.has_insecure_rpath {
+                        ("Insecure Paths", ThemeTokens::WARNING)
+                    } else {
+                        ("Clean", ThemeTokens::SUCCESS)
+                    };
+                    if scorecard_item(ui, "RPATH Clean", rpath_txt, rpath_col, "🔍", "Validates library search paths against insecure relative or world-writable paths") {
+                        self.view = View::Mitigations;
+                    }
+                });
+            });
+
+            ui.add_space(10.0);
+
+            // Card 2: Binary Architecture & ABI
+            egui::CollapsingHeader::new(
+                egui::RichText::new("⚙️ Architecture & File Profile")
+                    .heading()
+                    .size(15.0),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                let card = egui::Frame::new()
+                    .fill(ThemeTokens::BG_SURFACE)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(18, 14));
+
+                card.show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::Grid::new("elf_grid")
+                        .num_columns(2)
+                        .spacing([24.0, 8.0])
+                        .show(ui, |ui| {
+                            row(ui, "Bitness / Class", &binary.elf.class.to_string());
+                            row(ui, "ISA / Architecture", &binary.elf.machine.to_string());
+                            row(ui, "Byte Ordering", &binary.elf.endianness.to_string());
+                            row(ui, "Binary Type", &binary.elf.elf_type.to_string());
+                            row(ui, "Operating System ABI", &binary.elf.os_abi.to_string());
+                            row(ui, "ABI Version", &binary.elf.abi_version.to_string());
+                            row(
+                                ui,
+                                "Processor Flags (e_flags)",
+                                &format!("{:#x}", binary.elf.flags),
+                            );
+
+                            ui.strong("Entry Point (Virtual Address)");
+                            ui.horizontal(|ui| {
+                                let ep_str = format!("{:#010x}", binary.elf.entry_point);
+                                ui.monospace(&ep_str);
+                                if ui.small_button("📋 Copy").clicked() {
+                                    ui.ctx().copy_text(ep_str);
+                                    self.set_status("Entry point copied");
+                                }
+                            });
+                            ui.end_row();
+                        });
+                });
+            });
+
+            ui.add_space(10.0);
+
+            // Card 3: File Identity & Hashes
             egui::CollapsingHeader::new(
                 egui::RichText::new("📁 File Identity & Hashes")
                     .heading()
@@ -788,13 +1454,28 @@ impl ViewState {
             )
             .default_open(true)
             .show(ui, |ui| {
-                ui.group(|ui| {
+                let card = egui::Frame::new()
+                    .fill(ThemeTokens::BG_SURFACE)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(18, 14));
+
+                card.show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     egui::Grid::new("file_grid")
                         .num_columns(2)
-                        .spacing([20.0, 8.0])
+                        .spacing([24.0, 8.0])
                         .show(ui, |ui| {
-                            row(ui, "Target Path", &path.display().to_string());
+                            ui.strong("Target Path");
+                            ui.horizontal(|ui| {
+                                ui.label(path.display().to_string());
+                                if ui.small_button("📋 Copy").clicked() {
+                                    ui.ctx().copy_text(path.display().to_string());
+                                    self.set_status("Path copied");
+                                }
+                            });
+                            ui.end_row();
+
                             row(
                                 ui,
                                 "File Size",
@@ -804,9 +1485,8 @@ impl ViewState {
                                     format_number(binary.file.size_bytes)
                                 ),
                             );
-                            row(ui, "Format", "ELF (Executable and Linkable Format)");
 
-                            ui.strong("SHA-256");
+                            ui.strong("SHA-256 Digest");
                             ui.horizontal(|ui| {
                                 ui.monospace(&binary.hashes.sha256);
                                 if ui.small_button("📋 Copy").clicked() {
@@ -821,314 +1501,290 @@ impl ViewState {
 
             ui.add_space(10.0);
 
-            // Card 2: Security Audit Summary (checksec)
+            // Card 4: Header Tables & Navigation Hub
             egui::CollapsingHeader::new(
-                egui::RichText::new("🛡️ Security Mitigations Summary")
+                egui::RichText::new("📑 Structural Tables & Navigation")
                     .heading()
                     .size(15.0),
             )
             .default_open(true)
             .show(ui, |ui| {
-                ui.group(|ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
+                let card = egui::Frame::new()
+                    .fill(ThemeTokens::BG_SURFACE)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(18, 14));
 
-                        // RELRO badge
-                        let (relro_txt, relro_col) = match binary.mitigations.relro {
-                            Relro::Full => ("Full RELRO", egui::Color32::from_rgb(50, 180, 80)),
-                            Relro::Partial => {
-                                ("Partial RELRO", egui::Color32::from_rgb(220, 160, 40))
-                            }
-                            Relro::None => ("No RELRO", egui::Color32::from_rgb(220, 70, 70)),
-                            Relro::Unknown => {
-                                ("RELRO Unknown", egui::Color32::from_rgb(180, 180, 180))
-                            }
-                        };
-                        badge(ui, relro_txt, relro_col);
-
-                        // Canary badge
-                        match binary.mitigations.stack_canary {
-                            Hardening::Enabled => {
-                                badge(ui, "Canary Found", egui::Color32::from_rgb(50, 180, 80));
-                            }
-                            Hardening::Disabled => {
-                                badge(ui, "No Canary", egui::Color32::from_rgb(220, 70, 70));
-                            }
-                            Hardening::Unknown => {
-                                badge(ui, "Canary Unknown", egui::Color32::from_rgb(180, 180, 180));
-                            }
-                        }
-
-                        // NX badge
-                        match binary.mitigations.nx {
-                            Hardening::Enabled => {
-                                badge(ui, "NX Enabled", egui::Color32::from_rgb(50, 180, 80));
-                            }
-                            Hardening::Disabled => {
-                                badge(
-                                    ui,
-                                    "NX Disabled (RWX)",
-                                    egui::Color32::from_rgb(220, 70, 70),
-                                );
-                            }
-                            Hardening::Unknown => {
-                                badge(ui, "NX Unknown", egui::Color32::from_rgb(180, 180, 180));
-                            }
-                        }
-
-                        // PIE badge
-                        let (pie_txt, pie_col) = match binary.mitigations.pie {
-                            PieStatus::Pie => ("PIE Enabled", egui::Color32::from_rgb(50, 180, 80)),
-                            PieStatus::Dso => {
-                                ("DSO / Shared", egui::Color32::from_rgb(70, 140, 240))
-                            }
-                            PieStatus::NoPie => ("No PIE", egui::Color32::from_rgb(220, 160, 40)),
-                            PieStatus::Unknown => {
-                                ("PIE Unknown", egui::Color32::from_rgb(180, 180, 180))
-                            }
-                        };
-                        badge(ui, pie_txt, pie_col);
-
-                        if binary.mitigations.rwx_segments > 0 {
-                            badge(ui, "⚠️ W^X Violation", egui::Color32::from_rgb(220, 50, 50));
-                        }
-                    });
-
-                    ui.add_space(6.0);
-                    if ui
-                        .button("🔍 View Detailed Mitigations Dashboard")
-                        .clicked()
-                    {
-                        self.view = View::Mitigations;
-                    }
-                });
-            });
-
-            ui.add_space(10.0);
-
-            // Card 3: ELF Architecture & ABI
-            egui::CollapsingHeader::new(
-                egui::RichText::new("⚙️ ELF Header & Architecture")
-                    .heading()
-                    .size(15.0),
-            )
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.group(|ui| {
-                    ui.set_width(ui.available_width());
-                    egui::Grid::new("elf_grid")
-                        .num_columns(2)
-                        .spacing([20.0, 8.0])
-                        .show(ui, |ui| {
-                            row(ui, "Class", &binary.elf.class.to_string());
-                            row(ui, "Endianness", &binary.elf.endianness.to_string());
-                            row(ui, "Type", &binary.elf.elf_type.to_string());
-                            row(ui, "Machine / ISA", &binary.elf.machine.to_string());
-                            row(ui, "Operating System ABI", &binary.elf.os_abi.to_string());
-                            row(ui, "ABI Version", &binary.elf.abi_version.to_string());
-                            row(
-                                ui,
-                                "Processor Flags (e_flags)",
-                                &format!("{:#x}", binary.elf.flags),
-                            );
-                        });
-                });
-            });
-
-            ui.add_space(10.0);
-
-            // Card 4: Header Table Structure & Offsets
-            egui::CollapsingHeader::new(
-                egui::RichText::new("📑 Header Tables & Layout")
-                    .heading()
-                    .size(15.0),
-            )
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.group(|ui| {
+                card.show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     egui::Grid::new("table_layout_grid")
-                        .num_columns(2)
-                        .spacing([20.0, 8.0])
+                        .num_columns(3)
+                        .spacing([24.0, 8.0])
                         .show(ui, |ui| {
-                            row(
-                                ui,
-                                "Program Header Offset",
-                                &format!("{:#x}", binary.elf.program_offset),
-                            );
-                            row(
-                                ui,
-                                "Program Header Entry Size",
-                                &format!("{} bytes", binary.elf.program_entry_size),
-                            );
-                            row(
-                                ui,
-                                "Program Header Count",
-                                &binary.elf.program_count.to_string(),
-                            );
-                            row(
-                                ui,
-                                "Section Header Offset",
-                                &format!("{:#x}", binary.elf.section_offset),
-                            );
-                            row(
-                                ui,
-                                "Section Header Entry Size",
-                                &format!("{} bytes", binary.elf.section_entry_size),
-                            );
-                            row(
-                                ui,
-                                "Section Header Count",
-                                &binary.elf.section_count.to_string(),
-                            );
+                            ui.strong("Sections");
+                            ui.label(format!("{} sections", binary.sections.len()));
+                            if ui.button("Inspect Sections (Alt+4)").clicked() {
+                                self.view = View::Sections;
+                            }
+                            ui.end_row();
+
+                            ui.strong("Symbols");
+                            ui.label(format!("{} symbols", binary.symbols.len()));
+                            if ui.button("Inspect Symbols (Alt+3)").clicked() {
+                                self.view = View::Symbols;
+                            }
+                            ui.end_row();
+
+                            ui.strong("Program Segments");
+                            ui.label(format!("{} segments", binary.segments.len()));
+                            if ui.button("Inspect Segments (Alt+5)").clicked() {
+                                self.view = View::Segments;
+                            }
+                            ui.end_row();
+
+                            ui.strong("Dynamic Libraries");
+                            ui.label(format!("{} required libraries", binary.dynamic.needed.len()));
+                            if ui.button("Inspect Dependencies (Alt+6)").clicked() {
+                                self.view = View::Dependencies;
+                            }
+                            ui.end_row();
+
+                            ui.strong("ELF Notes");
+                            ui.label(format!("{} note records", binary.notes.len()));
+                            if ui.button("Inspect Notes (Alt+7)").clicked() {
+                                self.view = View::Notes;
+                            }
+                            ui.end_row();
+
+                            ui.strong("Relocations");
+                            ui.label(format!("{} relocation records", binary.relocations.len()));
+                            if ui.button("Inspect Relocations (Alt+8)").clicked() {
+                                self.view = View::Relocations;
+                            }
+                            ui.end_row();
                         });
                 });
             });
-
-            ui.add_space(10.0);
-
-            // Card 5: Build Info (Build ID / Kernel ABI)
-            if !binary.notes.is_empty() {
-                egui::CollapsingHeader::new(
-                    egui::RichText::new("🏷️ Build Information")
-                        .heading()
-                        .size(15.0),
-                )
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.group(|ui| {
-                        ui.set_width(ui.available_width());
-                        egui::Grid::new("build_grid")
-                            .num_columns(2)
-                            .spacing([20.0, 8.0])
-                            .show(ui, |ui| {
-                                for note in &binary.notes {
-                                    if let Some(bid) = &note.build_id {
-                                        ui.strong("GNU Build ID");
-                                        ui.horizontal(|ui| {
-                                            ui.monospace(bid);
-                                            if ui.small_button("📋 Copy").clicked() {
-                                                ui.ctx().copy_text(bid.clone());
-                                                self.set_status("Build ID copied");
-                                            }
-                                        });
-                                        ui.end_row();
-                                    }
-                                    if let Some(abi) = &note.abi_tag {
-                                        row(ui, "Target Kernel ABI", abi);
-                                    }
-                                }
-                            });
-                    });
-                });
-            }
         });
     }
 
     fn render_mitigations(&mut self, ui: &mut egui::Ui, mit: &SecurityMitigations) {
-        ui.heading("🛡️ Security Hardening & Exploit Mitigations");
-        ui.label("Automated security assessment inspecting binary protections (checksec).");
-        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.heading(
+                egui::RichText::new("🛡️ Security Mitigations & Hardening (checksec)")
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if mit.rwx_segments > 0 {
+                    badge(ui, "⚠️ W^X VIOLATION", ThemeTokens::DANGER);
+                } else {
+                    badge(ui, "AUDIT READY", ThemeTokens::INFO);
+                }
+            });
+        });
+
+        ui.label(
+            egui::RichText::new(
+                "Automated checksec inspection analyzing exploit protections, binary hardening, and memory execution safety.",
+            )
+            .color(ThemeTokens::TEXT_SECONDARY),
+        );
+        ui.add_space(10.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let card = |ui: &mut egui::Ui, title: &str, status: &str, color: egui::Color32, desc: &str| {
+            let card = |ui: &mut egui::Ui,
+                        title: &str,
+                        status: &str,
+                        color: egui::Color32,
+                        desc: &str,
+                        remediation: &str| {
                 let frame = egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
+                    .fill(ThemeTokens::BG_SURFACE)
                     .corner_radius(egui::CornerRadius::same(8))
-                    .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.5)))
-                    .inner_margin(egui::Margin::symmetric(16, 12));
+                    .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.45)))
+                    .inner_margin(egui::Margin::symmetric(18, 14));
 
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.strong(egui::RichText::new(title).size(15.0));
+                        ui.strong(
+                            egui::RichText::new(title)
+                                .size(15.5)
+                                .color(ThemeTokens::TEXT_PRIMARY),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             badge(ui, status, color);
                         });
                     });
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(desc).size(12.5).color(ui.visuals().weak_text_color()));
+                    ui.label(
+                        egui::RichText::new(desc)
+                            .size(13.0)
+                            .color(ThemeTokens::TEXT_SECONDARY),
+                    );
+
+                    ui.add_space(6.0);
+                    let rem_box = egui::Frame::new()
+                        .fill(ThemeTokens::BG_INPUT)
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(8, 4));
+                    rem_box.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Remediation / Flag:")
+                                    .size(11.0)
+                                    .color(ThemeTokens::TEXT_MUTED),
+                            );
+                            ui.label(
+                                egui::RichText::new(remediation)
+                                    .monospace()
+                                    .size(11.5)
+                                    .color(ThemeTokens::INFO),
+                            );
+                        });
+                    });
                 });
                 ui.add_space(8.0);
             };
 
-            // RELRO
-            let (relro_status, relro_color, relro_desc) = match mit.relro {
-                Relro::Full => ("Full RELRO", egui::Color32::from_rgb(50, 180, 80), "The Global Offset Table (GOT) is completely read-only and immediate binding is enforced, preventing GOT overwrite exploits."),
-                Relro::Partial => ("Partial RELRO", egui::Color32::from_rgb(220, 160, 40), "ELF internal data sections are read-only after relocation, but GOT entries remain writable for lazy symbol binding."),
-                Relro::None => ("No RELRO", egui::Color32::from_rgb(220, 70, 70), "No relocation read-only protection found. Internal tables and the GOT are fully writable."),
-                Relro::Unknown => ("Unknown", egui::Color32::from_rgb(180, 180, 180), "The file has no program headers, so no load-time protection could be assessed."),
+            // 1. RELRO
+            let (relro_status, relro_color, relro_desc, relro_rem) = match mit.relro {
+                Relro::Full => ("Full RELRO", ThemeTokens::SUCCESS, "The Global Offset Table (GOT) is completely read-only and immediate symbol binding is enforced, eliminating GOT overwrite hijacking.", "Protected: -Wl,-z,relro,-z,now active"),
+                Relro::Partial => ("Partial RELRO", ThemeTokens::WARNING, "Internal data sections are read-only after relocation, but the GOT remains writable for lazy symbol resolution.", "Upgrade to Full RELRO: gcc -Wl,-z,relro,-z,now"),
+                Relro::None => ("No RELRO", ThemeTokens::DANGER, "No relocation read-only protection found. The Global Offset Table is fully writable, allowing function pointer tampering.", "Enable RELRO: gcc -Wl,-z,relro,-z,now"),
+                Relro::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED, "The file has no program headers, so relocation protection cannot be evaluated.", "Compile with standard program headers"),
             };
-            card(ui, "RELRO (Relocation Read-Only)", relro_status, relro_color, relro_desc);
+            card(ui, "RELRO (Relocation Read-Only)", relro_status, relro_color, relro_desc, relro_rem);
 
-            // Stack Canary
-            let (canary_status, canary_color, canary_desc) = match mit.stack_canary {
-                Hardening::Enabled => ("Enabled", egui::Color32::from_rgb(50, 180, 80), "Stack canary symbols (__stack_chk_fail) detected. Buffer overflows on the stack will trigger immediate termination."),
-                Hardening::Disabled => ("Disabled (Vulnerable)", egui::Color32::from_rgb(220, 70, 70), "The symbol tables contain no stack canary references. Stack-based buffer overflows may allow hijacking instruction flow."),
-                Hardening::Unknown => ("Unknown", egui::Color32::from_rgb(180, 180, 180), "No symbol table is available, so canary references cannot be observed in this file."),
+            // 2. Stack Canary
+            let (canary_status, canary_color, canary_desc, canary_rem) = match mit.stack_canary {
+                Hardening::Enabled => ("Enabled", ThemeTokens::SUCCESS, "Stack canary symbols (__stack_chk_fail) detected. Stack-based buffer overflows will trigger immediate process abort.", "Protected: -fstack-protector-strong active"),
+                Hardening::Disabled => ("Disabled (Vulnerable)", ThemeTokens::DANGER, "The symbol table contains no stack canary references. Stack-based buffer overflows may overwrite return addresses.", "Enable Canaries: gcc -fstack-protector-strong"),
+                Hardening::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED, "No symbol table is present, so canary symbols cannot be verified in this stripped binary.", "Inspect unstripped binary or runtime hooks"),
             };
-            card(ui, "Stack Canary Protection", canary_status, canary_color, canary_desc);
+            card(ui, "Stack Canary Protection", canary_status, canary_color, canary_desc, canary_rem);
 
-            // NX
-            let (nx_title, nx_status, nx_color, nx_desc) = match mit.nx {
-                Hardening::Enabled => ("NX / DEP (Non-Executable Stack)", "Enabled", egui::Color32::from_rgb(50, 180, 80), "The stack segment is marked non-executable (PT_GNU_STACK without PF_X). Direct shellcode execution on the stack is blocked."),
-                Hardening::Disabled => ("NX / DEP (Executable Stack)", "Disabled (RWX)", egui::Color32::from_rgb(220, 70, 70), "The stack segment allows execution (PF_X). An attacker can inject and directly execute shellcode on the stack."),
-                Hardening::Unknown => ("NX / DEP (Stack Permissions)", "Unknown", egui::Color32::from_rgb(180, 180, 180), "No PT_GNU_STACK segment is present, so stack execution permissions are left to the kernel default and cannot be read from the file."),
+            // 3. NX / DEP
+            let (nx_status, nx_color, nx_desc, nx_rem) = match mit.nx {
+                Hardening::Enabled => ("Enabled", ThemeTokens::SUCCESS, "The stack segment is marked non-executable (PT_GNU_STACK without PF_X). Direct shellcode injection on the stack is blocked.", "Protected: -Wl,-z,noexecstack active"),
+                Hardening::Disabled => ("Disabled (RWX Stack)", ThemeTokens::DANGER, "The stack segment allows execution (PF_X). An attacker can inject and execute native shellcode directly on the stack.", "Disable Executable Stack: gcc -Wl,-z,noexecstack"),
+                Hardening::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED, "No PT_GNU_STACK segment is present; stack permissions are subject to kernel default behavior.", "Specify stack permissions: gcc -Wl,-z,noexecstack"),
             };
-            card(ui, nx_title, nx_status, nx_color, nx_desc);
+            card(ui, "NX / DEP (Non-Executable Stack)", nx_status, nx_color, nx_desc, nx_rem);
 
-            // PIE
-            let (pie_status, pie_color, pie_desc) = match mit.pie {
-                PieStatus::Pie => ("PIE Enabled", egui::Color32::from_rgb(50, 180, 80), "Position-Independent Executable loaded at randomized base address via ASLR."),
-                PieStatus::Dso => ("Dynamic Shared Object (DSO)", egui::Color32::from_rgb(70, 140, 240), "Shared library with relocatable code suitable for ASLR address randomization."),
-                PieStatus::NoPie => ("No PIE (Fixed Base)", egui::Color32::from_rgb(220, 160, 40), "Fixed virtual base address executable. Code addresses are static, making ROP chain exploitation easier."),
-                PieStatus::Unknown => ("Unknown", egui::Color32::from_rgb(180, 180, 180), "The file type is neither an executable nor a shared object, so PIE status does not apply."),
+            // 4. PIE
+            let (pie_status, pie_color, pie_desc, pie_rem) = match mit.pie {
+                PieStatus::Pie => ("PIE Enabled", ThemeTokens::SUCCESS, "Position-Independent Executable loaded at randomized base address via ASLR, obstructing ROP chain attacks.", "Protected: -fPIE -pie active"),
+                PieStatus::Dso => ("Dynamic Shared Object (DSO)", ThemeTokens::INFO, "Shared library with relocatable code, natively suitable for ASLR address randomization.", "Shared library with relocatable base"),
+                PieStatus::NoPie => ("No PIE (Fixed Base)", ThemeTokens::WARNING, "Executable has a fixed virtual base address. Static code addresses make return-oriented programming (ROP) easier.", "Enable PIE: gcc -fPIE -pie"),
+                PieStatus::Unknown => ("Unknown", ThemeTokens::TEXT_MUTED, "The file type is neither an executable nor a shared object; PIE status is not applicable.", "N/A"),
             };
-            card(ui, "PIE (Position Independent Executable)", pie_status, pie_color, pie_desc);
+            card(ui, "PIE (Position Independent Executable)", pie_status, pie_color, pie_desc, pie_rem);
 
-            // Fortify Source
-            let (fortify_status, fortify_color, fortify_desc) = match mit.fortify {
-                Hardening::Enabled => (format!("{} Functions", mit.fortified_functions.len()), egui::Color32::from_rgb(50, 180, 80), "Fortified library calls detected, performing runtime bounds checking on sensitive string/memory operations."),
-                Hardening::Disabled => ("None Detected".to_string(), egui::Color32::from_rgb(180, 180, 180), "No fortified libc wrapper symbols (e.g. __printf_chk) were found in the symbol table."),
-                Hardening::Unknown => ("Unknown".to_string(), egui::Color32::from_rgb(180, 180, 180), "No symbol table is available, so fortified library references cannot be observed in this file."),
+            // 5. Fortify Source
+            let (fort_status, fort_color, fort_desc, fort_rem) = match mit.fortify {
+                Hardening::Enabled => (
+                    format!("{} Functions", mit.fortified_functions.len()),
+                    ThemeTokens::SUCCESS,
+                    "Fortified library calls detected, performing compile-time and run-time bounds checks on memory/string operations.",
+                    "Protected: -D_FORTIFY_SOURCE=2 or =3 active",
+                ),
+                Hardening::Disabled => (
+                    "None Detected".to_string(),
+                    ThemeTokens::TEXT_MUTED,
+                    "No fortified libc wrapper symbols (e.g. __printf_chk, __memcpy_chk) found in symbol table.",
+                    "Enable Fortify: gcc -O2 -D_FORTIFY_SOURCE=3",
+                ),
+                Hardening::Unknown => (
+                    "Unknown".to_string(),
+                    ThemeTokens::TEXT_MUTED,
+                    "No symbol table available to inspect fortified function calls.",
+                    "Inspect unstripped binary for _chk symbols",
+                ),
             };
-            card(ui, "FORTIFY_SOURCE", &fortify_status, fortify_color, fortify_desc);
+            card(ui, "FORTIFY_SOURCE", &fort_status, fort_color, fort_desc, fort_rem);
+
             if !mit.fortified_functions.is_empty() {
-                ui.collapsing("View Fortified Function Symbols", |ui| {
-                    for f in &mit.fortified_functions {
-                        ui.monospace(format!("  • {f}"));
-                    }
-                });
+                ui.collapsing(
+                    egui::RichText::new(format!(
+                        "View Fortified Functions ({})",
+                        mit.fortified_functions.len()
+                    ))
+                    .color(ThemeTokens::ACCENT_HOVER),
+                    |ui| {
+                        let f_box = egui::Frame::new()
+                            .fill(ThemeTokens::BG_INPUT)
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .inner_margin(egui::Margin::symmetric(14, 10));
+                        f_box.show(ui, |ui| {
+                            for f in &mit.fortified_functions {
+                                ui.monospace(format!("  • {f}"));
+                            }
+                        });
+                    },
+                );
                 ui.add_space(8.0);
             }
 
-            // W^X RWX Segments
-            if mit.rwx_segments == 0 {
-                card(ui, "W^X Memory Policy", "Enforced (0 RWX)", egui::Color32::from_rgb(50, 180, 80), "No segments have both Write and Execute permissions. Memory is either writable or executable, but never both.");
+            // 6. W^X Policy
+            let (wx_status, wx_color, wx_desc, wx_rem) = if mit.rwx_segments == 0 {
+                (
+                    "Enforced (0 RWX)",
+                    ThemeTokens::SUCCESS,
+                    "No segments have both Write and Execute permissions. Memory is either writable or executable, but never both.",
+                    "Protected: Write XOR Execute policy intact",
+                )
             } else {
-                card(ui, "W^X Memory Policy", &format!("VIOLATION ({} RWX Segments)", mit.rwx_segments), egui::Color32::from_rgb(220, 50, 50), "Warning: Program contains memory segments with both Write and Execute permissions, allowing code injection and runtime modification.");
-            }
+                (
+                    "VIOLATION",
+                    ThemeTokens::DANGER,
+                    "CRITICAL: Memory segments have both Write and Execute permissions, allowing code injection and runtime modification.",
+                    "Remove RWX segments: check linker script and avoid PF_W + PF_X on same segment",
+                )
+            };
+            card(ui, "W^X Memory Policy", wx_status, wx_color, wx_desc, wx_rem);
 
-            // Insecure RPATH
-            if mit.has_insecure_rpath {
-                card(ui, "Runtime Search Paths (RPATH)", "Insecure Paths Detected", egui::Color32::from_rgb(220, 140, 40), "RPATH or RUNPATH contains relative directory lookups (e.g. '.'), which can allow local library hijacking.");
+            // 7. Insecure RPATH
+            let (rpath_status, rpath_color, rpath_desc, rpath_rem) = if mit.has_insecure_rpath {
+                (
+                    "Insecure Paths Detected",
+                    ThemeTokens::WARNING,
+                    "RPATH/RUNPATH contains relative (e.g. '.', '..') or world-writable paths (/tmp, /dev/shm), permitting local library injection.",
+                    "Use relative origin paths: -Wl,-rpath,'$ORIGIN/../lib' or remove relative RPATH entries",
+                )
             } else {
-                card(ui, "Runtime Search Paths (RPATH)", "Clean", egui::Color32::from_rgb(50, 180, 80), "No insecure relative or empty directories detected in dynamic library search paths.");
-            }
+                (
+                    "Clean",
+                    ThemeTokens::SUCCESS,
+                    "No insecure relative or world-writable directories detected in dynamic library search paths.",
+                    "Protected: Search paths are securely anchored",
+                )
+            };
+            card(ui, "Runtime Search Paths (RPATH)", rpath_status, rpath_color, rpath_desc, rpath_rem);
         });
     }
 
     fn render_symbols(&mut self, ui: &mut egui::Ui, binary: &Binary) {
         ui.horizontal(|ui| {
-            ui.heading(format!("🏷️ Symbols ({})", binary.symbols.len()));
-
-            ui.add_space(16.0);
-            ui.label("🔍");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search_query)
-                    .hint_text("Search symbols by name…")
-                    .desired_width(220.0),
+            ui.heading(
+                egui::RichText::new(format!("🏷️ Symbols ({})", binary.symbols.len()))
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
             );
+
+            ui.add_space(14.0);
+            ui.label("🔍");
+            let search_edit = egui::TextEdit::singleline(&mut self.search_query)
+                .hint_text("Search symbol names (Ctrl+F)…")
+                .desired_width(220.0);
+
+            let resp = ui.add(search_edit);
+            if self.focus_search {
+                resp.request_focus();
+                self.focus_search = false;
+            }
 
             if !self.search_query.is_empty() && ui.small_button("✕").clicked() {
                 self.search_query.clear();
@@ -1136,7 +1792,7 @@ impl ViewState {
 
             ui.separator();
 
-            // Filter pills
+            // Type filter pills
             let filter_btn = |ui: &mut egui::Ui,
                               current: &mut SymbolFilter,
                               target: SymbolFilter,
@@ -1146,7 +1802,7 @@ impl ViewState {
                     *current = target;
                 }
             };
-            filter_btn(ui, &mut self.symbol_filter, SymbolFilter::All, "All");
+            filter_btn(ui, &mut self.symbol_filter, SymbolFilter::All, "All Types");
             filter_btn(
                 ui,
                 &mut self.symbol_filter,
@@ -1172,6 +1828,35 @@ impl ViewState {
                 "Exports",
             );
 
+            ui.separator();
+
+            // Table filter pills
+            let table_btn =
+                |ui: &mut egui::Ui, current: &mut TableFilter, target: TableFilter, label: &str| {
+                    let is_sel = *current == target;
+                    if ui.selectable_label(is_sel, label).clicked() {
+                        *current = target;
+                    }
+                };
+            table_btn(
+                ui,
+                &mut self.symbol_table_filter,
+                TableFilter::All,
+                "All Tables",
+            );
+            table_btn(
+                ui,
+                &mut self.symbol_table_filter,
+                TableFilter::Dynamic,
+                ".dynsym",
+            );
+            table_btn(
+                ui,
+                &mut self.symbol_table_filter,
+                TableFilter::Static,
+                ".symtab",
+            );
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("↺ Reset Widths").clicked() {
                     self.symbol_col_widths = DEFAULT_SYMBOL_COL_WIDTHS;
@@ -1191,11 +1876,32 @@ impl ViewState {
                     return false;
                 }
                 match self.symbol_filter {
-                    SymbolFilter::All => true,
-                    SymbolFilter::Functions => s.sym_type == SymbolType::Func,
-                    SymbolFilter::Objects => s.sym_type == SymbolType::Object,
-                    SymbolFilter::Imports => s.is_import,
-                    SymbolFilter::Exports => s.is_export,
+                    SymbolFilter::All => {}
+                    SymbolFilter::Functions => {
+                        if s.sym_type != SymbolType::Func {
+                            return false;
+                        }
+                    }
+                    SymbolFilter::Objects => {
+                        if s.sym_type != SymbolType::Object {
+                            return false;
+                        }
+                    }
+                    SymbolFilter::Imports => {
+                        if !s.is_import {
+                            return false;
+                        }
+                    }
+                    SymbolFilter::Exports => {
+                        if !s.is_export {
+                            return false;
+                        }
+                    }
+                }
+                match self.symbol_table_filter {
+                    TableFilter::All => true,
+                    TableFilter::Dynamic => s.table == SymbolTableKind::Dynamic,
+                    TableFilter::Static => s.table == SymbolTableKind::Static,
                 }
             })
             .collect();
@@ -1228,7 +1934,14 @@ impl ViewState {
             visible.reverse();
         }
 
-        ui.small(format!("Showing {} matching symbols", visible.len()));
+        ui.small(
+            egui::RichText::new(format!(
+                "Showing {} matching symbols (of {} total)",
+                visible.len(),
+                binary.symbols.len()
+            ))
+            .color(ThemeTokens::TEXT_MUTED),
+        );
         ui.add_space(4.0);
 
         let has_selection = self.selected_symbol.is_some();
@@ -1377,16 +2090,26 @@ impl ViewState {
                             None,
                         );
 
-                        // Name (selectable)
+                        // Name
                         let name_display = if sym.name.is_empty() {
                             "<unnamed>"
                         } else {
                             &sym.name
                         };
-                        let btn = egui::Button::new(egui::RichText::new(name_display).strong())
-                            .min_size(egui::vec2(self.symbol_col_widths[1], 20.0))
-                            .selected(is_selected)
-                            .truncate();
+                        let name_col = if sym.is_import {
+                            ThemeTokens::INFO
+                        } else if sym.is_export {
+                            ThemeTokens::SUCCESS
+                        } else {
+                            ThemeTokens::TEXT_PRIMARY
+                        };
+
+                        let btn = egui::Button::new(
+                            egui::RichText::new(name_display).color(name_col).strong(),
+                        )
+                        .min_size(egui::vec2(self.symbol_col_widths[1], 20.0))
+                        .selected(is_selected)
+                        .truncate();
                         if ui.add(btn).clicked() {
                             if is_selected {
                                 self.selected_symbol = None;
@@ -1400,7 +2123,7 @@ impl ViewState {
                             ui,
                             self.symbol_col_widths[2],
                             sym.sym_type.to_string(),
-                            true,
+                            false,
                             None,
                         );
 
@@ -1409,7 +2132,7 @@ impl ViewState {
                             ui,
                             self.symbol_col_widths[3],
                             sym.binding.to_string(),
-                            true,
+                            false,
                             None,
                         );
 
@@ -1418,12 +2141,16 @@ impl ViewState {
                             ui,
                             self.symbol_col_widths[4],
                             sym.visibility.to_string(),
-                            true,
+                            false,
                             None,
                         );
 
                         // Address
-                        let addr_str = format!("{:#010x}", sym.value);
+                        let addr_str = if sym.value == 0 {
+                            "-".to_string()
+                        } else {
+                            format!("{:#010x}", sym.value)
+                        };
                         cell_label(
                             ui,
                             self.symbol_col_widths[5],
@@ -1433,15 +2160,14 @@ impl ViewState {
                         );
 
                         // Size
-                        cell_label(
-                            ui,
-                            self.symbol_col_widths[6],
-                            sym.size.to_string(),
-                            true,
-                            None,
-                        );
+                        let sz_str = if sym.size == 0 {
+                            "-".to_string()
+                        } else {
+                            format!("{} B", sym.size)
+                        };
+                        cell_label(ui, self.symbol_col_widths[6], sz_str, true, None);
 
-                        // Table kind
+                        // Table
                         cell_label(
                             ui,
                             self.symbol_col_widths[7],
@@ -1468,79 +2194,121 @@ impl ViewState {
             }
             if splitter_resp.dragged() {
                 self.symbol_detail_height =
-                    (self.symbol_detail_height - splitter_resp.drag_delta().y).clamp(80.0, 350.0);
+                    (self.symbol_detail_height - splitter_resp.drag_delta().y).clamp(90.0, 360.0);
             }
 
             let fill = if splitter_resp.dragged() {
-                egui::Color32::from_rgb(91, 91, 214)
+                ThemeTokens::BORDER_ACTIVE
             } else {
-                ui.visuals().faint_bg_color
+                ThemeTokens::BORDER_SUBTLE
             };
             ui.painter()
                 .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
 
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), self.symbol_detail_height),
-                egui::Layout::top_down(egui::Align::LEFT),
-                |ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(format!("Symbol Details: {}", sym.name));
-                        if ui.small_button("📋 Copy Name").clicked() {
-                            ui.ctx().copy_text(sym.name.clone());
-                            self.set_status("Symbol name copied");
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕ Close").clicked() {
-                                self.selected_symbol = None;
-                            }
-                        });
-                    });
-                    ui.add_space(4.0);
+            let detail_frame = egui::Frame::new()
+                .fill(ThemeTokens::BG_SURFACE)
+                .inner_margin(egui::Margin::symmetric(14, 10));
 
-                    egui::Grid::new("sym_detail_grid")
-                        .num_columns(4)
-                        .spacing([24.0, 6.0])
-                        .show(ui, |ui| {
-                            row(ui, "Value / Address", &format!("{:#010x}", sym.value));
-                            row(ui, "Size", &format!("{} bytes", sym.size));
-                            row(ui, "Type", &sym.sym_type.to_string());
-                            row(ui, "Binding", &sym.binding.to_string());
-                            row(ui, "Visibility", &sym.visibility.to_string());
-                            row(ui, "Origin Table", &sym.table.to_string());
-                            row(
-                                ui,
-                                "Role",
-                                if sym.is_import {
-                                    "Imported symbol [UNDEF]"
-                                } else if sym.is_export {
-                                    "Exported symbol [DEFINED]"
-                                } else {
-                                    "Internal symbol"
+            detail_frame.show(ui, |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), self.symbol_detail_height),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(
+                                egui::RichText::new(format!("Symbol Details: {}", sym.name))
+                                    .size(14.0)
+                                    .color(ThemeTokens::TEXT_PRIMARY),
+                            );
+                            if ui.small_button("📋 Copy Name").clicked() {
+                                ui.ctx().copy_text(sym.name.clone());
+                                self.set_status("Symbol name copied");
+                            }
+                            if sym.value != 0 && ui.small_button("📋 Copy Address").clicked() {
+                                ui.ctx().copy_text(format!("{:#010x}", sym.value));
+                                self.set_status("Symbol address copied");
+                            }
+
+                            if let Some(sec_idx) = sym.section_index
+                                && (sec_idx as usize) < binary.sections.len()
+                            {
+                                let sec_name = &binary.sections[sec_idx as usize].name;
+                                if ui
+                                    .button(
+                                        egui::RichText::new(format!(
+                                            "📑 Jump to Section #{sec_idx} ({sec_name})"
+                                        ))
+                                        .size(11.5)
+                                        .color(ThemeTokens::ACCENT_HOVER),
+                                    )
+                                    .clicked()
+                                {
+                                    self.view = View::Sections;
+                                    self.selected_section = Some(sec_idx);
+                                }
+                            }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("✕ Close").clicked() {
+                                        self.selected_symbol = None;
+                                    }
                                 },
                             );
-                            row(
-                                ui,
-                                "Section Index",
-                                &sym.section_index
-                                    .map(|i| i.to_string())
-                                    .unwrap_or_else(|| "UNDEF".to_string()),
-                            );
                         });
-                },
-            );
+                        ui.add_space(4.0);
+
+                        egui::Grid::new("sym_detail_grid")
+                            .num_columns(4)
+                            .spacing([28.0, 6.0])
+                            .show(ui, |ui| {
+                                row(ui, "Value / Address", &format!("{:#010x}", sym.value));
+                                row(ui, "Size", &format!("{} bytes", sym.size));
+                                row(ui, "Type", &sym.sym_type.to_string());
+                                row(ui, "Binding", &sym.binding.to_string());
+                                row(ui, "Visibility", &sym.visibility.to_string());
+                                row(ui, "Origin Table", &sym.table.to_string());
+                                row(
+                                    ui,
+                                    "Role",
+                                    if sym.is_import {
+                                        "Imported symbol [UNDEF]"
+                                    } else if sym.is_export {
+                                        "Exported symbol [DEFINED]"
+                                    } else {
+                                        "Internal symbol"
+                                    },
+                                );
+                                row(
+                                    ui,
+                                    "Section Index",
+                                    &sym.section_index
+                                        .map(|i| format!("#{i}"))
+                                        .unwrap_or_else(|| "UNDEF (0)".to_string()),
+                                );
+                            });
+                    },
+                );
+            });
         }
     }
 
     fn render_sections(&mut self, ui: &mut egui::Ui, binary: &Binary) {
         ui.horizontal(|ui| {
-            ui.heading(format!("📑 Sections ({})", binary.sections.len()));
+            ui.heading(
+                egui::RichText::new(format!("📑 Sections ({})", binary.sections.len()))
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
+            );
 
-            ui.add_space(16.0);
+            ui.add_space(14.0);
             ui.label("🔍");
             ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
                     .hint_text("Filter by name or type…")
-                    .desired_width(200.0),
+                    .desired_width(220.0),
             );
 
             if !self.search_query.is_empty() && ui.small_button("✕").clicked() {
@@ -1579,7 +2347,6 @@ impl ViewState {
             SectionSort::Address => visible.sort_by_key(|s| s.address),
             SectionSort::Size => visible.sort_by_key(|s| s.size),
             SectionSort::Entropy => visible.sort_by(|a, b| {
-                // Sections whose contents were not scanned sort lowest.
                 a.entropy
                     .unwrap_or(f64::NEG_INFINITY)
                     .total_cmp(&b.entropy.unwrap_or(f64::NEG_INFINITY))
@@ -1589,7 +2356,13 @@ impl ViewState {
             visible.reverse();
         }
 
-        ui.small(format!("Showing {} sections", visible.len()));
+        ui.small(
+            egui::RichText::new(format!(
+                "Showing {} sections (Entropy indicates code density or packing)",
+                visible.len()
+            ))
+            .color(ThemeTokens::TEXT_MUTED),
+        );
         ui.add_space(4.0);
 
         let has_selection = self.selected_section.is_some();
@@ -1705,7 +2478,7 @@ impl ViewState {
                         ui,
                         &mut self.section_col_widths[7],
                         DEFAULT_SECTION_COL_WIDTHS[7],
-                        55.0,
+                        65.0,
                         "Entropy",
                         sort_arrow(sort_field == SectionSort::Entropy, sort_asc),
                         || {
@@ -1733,11 +2506,14 @@ impl ViewState {
                             None,
                         );
 
-                        let name_btn =
-                            egui::Button::new(egui::RichText::new(&section.name).strong())
-                                .min_size(egui::vec2(self.section_col_widths[1], 20.0))
-                                .selected(is_selected)
-                                .truncate();
+                        let name_btn = egui::Button::new(
+                            egui::RichText::new(&section.name)
+                                .strong()
+                                .color(ThemeTokens::TEXT_PRIMARY),
+                        )
+                        .min_size(egui::vec2(self.section_col_widths[1], 20.0))
+                        .selected(is_selected)
+                        .truncate();
                         if ui.add(name_btn).clicked() {
                             if is_selected {
                                 self.selected_section = None;
@@ -1760,12 +2536,23 @@ impl ViewState {
                         );
 
                         let flags_str = section_flags_str(section.flags);
+                        let is_rwx = (section.flags & 1 != 0) && (section.flags & 4 != 0);
+                        let flag_col = if is_rwx {
+                            ThemeTokens::DANGER
+                        } else {
+                            ThemeTokens::TEXT_SECONDARY
+                        };
+
                         cell_label(
                             ui,
                             self.section_col_widths[3],
-                            egui::RichText::new(&flags_str).strong(),
+                            egui::RichText::new(&flags_str).color(flag_col).strong(),
                             false,
-                            None,
+                            if is_rwx {
+                                Some("⚠️ W+X: Section is both Writable and Executable!")
+                            } else {
+                                None
+                            },
                         );
 
                         let addr_str = format!("{:#010x}", section.address);
@@ -1789,23 +2576,7 @@ impl ViewState {
                             Some(&offset_str),
                         );
 
-                        // Entropy with color
-                        let ent_str = section
-                            .entropy
-                            .map_or_else(|| "n/a".to_string(), |entropy| format!("{entropy:.2}"));
-                        let ent_color = match section.entropy {
-                            Some(entropy) if entropy > 7.2 => egui::Color32::from_rgb(230, 80, 80),
-                            Some(entropy) if entropy > 6.0 => egui::Color32::from_rgb(220, 160, 40),
-                            Some(entropy) if entropy < 2.0 => egui::Color32::from_rgb(90, 180, 90),
-                            _ => ui.visuals().weak_text_color(),
-                        };
-                        cell_label(
-                            ui,
-                            self.section_col_widths[7],
-                            egui::RichText::new(ent_str).color(ent_color),
-                            true,
-                            None,
-                        );
+                        entropy_badge(ui, section.entropy);
                     });
                 }
             });
@@ -1825,75 +2596,111 @@ impl ViewState {
             }
             if splitter_resp.dragged() {
                 self.section_detail_height =
-                    (self.section_detail_height - splitter_resp.drag_delta().y).clamp(80.0, 350.0);
+                    (self.section_detail_height - splitter_resp.drag_delta().y).clamp(90.0, 360.0);
             }
 
             let fill = if splitter_resp.dragged() {
-                egui::Color32::from_rgb(91, 91, 214)
+                ThemeTokens::BORDER_ACTIVE
             } else {
-                ui.visuals().faint_bg_color
+                ThemeTokens::BORDER_SUBTLE
             };
             ui.painter()
                 .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
 
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), self.section_detail_height),
-                egui::Layout::top_down(egui::Align::LEFT),
-                |ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(format!("Section #{}: {}", section.index, section.name));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕ Close").clicked() {
-                                self.selected_section = None;
-                            }
-                        });
-                    });
-                    ui.add_space(4.0);
+            let detail_frame = egui::Frame::new()
+                .fill(ThemeTokens::BG_SURFACE)
+                .inner_margin(egui::Margin::symmetric(14, 10));
 
-                    egui::Grid::new("sec_detail_grid")
-                        .num_columns(4)
-                        .spacing([24.0, 6.0])
-                        .show(ui, |ui| {
-                            row(ui, "Virtual Address", &format!("{:#010x}", section.address));
-                            row(ui, "File Offset", &format!("{:#x}", section.offset));
-                            row(
-                                ui,
-                                "Size",
-                                &format!("{} bytes ({})", section.size, format_bytes(section.size)),
+            detail_frame.show(ui, |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), self.section_detail_height),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(
+                                egui::RichText::new(format!(
+                                    "Section #{}: {}",
+                                    section.index, section.name
+                                ))
+                                .size(14.0)
+                                .color(ThemeTokens::TEXT_PRIMARY),
                             );
-                            row(
-                                ui,
-                                "Entropy",
-                                &section.entropy.map_or_else(
-                                    || "n/a (empty or out-of-bounds)".to_string(),
-                                    |entropy| format!("{entropy:.3} bits/byte"),
-                                ),
-                            );
-                            row(
-                                ui,
-                                "Address Alignment",
-                                &format!("{:#x}", section.alignment),
-                            );
-                            row(
-                                ui,
-                                "Entry Size (sh_entsize)",
-                                &format!("{:#x}", section.entry_size),
-                            );
-                            row(ui, "Extra Info (sh_info)", &format!("{:#x}", section.info));
-                            row(
-                                ui,
-                                "Linked Section (sh_link)",
-                                &format!("#{}", section.link),
+
+                            if ui.small_button("📋 Copy Name").clicked() {
+                                ui.ctx().copy_text(section.name.clone());
+                                self.set_status("Section name copied");
+                            }
+                            if section.address != 0 && ui.small_button("📋 Copy Address").clicked()
+                            {
+                                ui.ctx().copy_text(format!("{:#010x}", section.address));
+                                self.set_status("Section address copied");
+                            }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("✕ Close").clicked() {
+                                        self.selected_section = None;
+                                    }
+                                },
                             );
                         });
-                },
-            );
+                        ui.add_space(4.0);
+
+                        egui::Grid::new("sec_detail_grid")
+                            .num_columns(4)
+                            .spacing([28.0, 6.0])
+                            .show(ui, |ui| {
+                                row(ui, "Virtual Address", &format!("{:#010x}", section.address));
+                                row(ui, "File Offset", &format!("{:#x}", section.offset));
+                                row(
+                                    ui,
+                                    "Size",
+                                    &format!(
+                                        "{} bytes ({})",
+                                        section.size,
+                                        format_bytes(section.size)
+                                    ),
+                                );
+                                row(
+                                    ui,
+                                    "Shannon Entropy",
+                                    &section.entropy.map_or_else(
+                                        || "n/a (empty or out-of-bounds)".to_string(),
+                                        |entropy| format!("{entropy:.3} bits/byte"),
+                                    ),
+                                );
+                                row(
+                                    ui,
+                                    "Address Alignment",
+                                    &format!("{:#x}", section.alignment),
+                                );
+                                row(
+                                    ui,
+                                    "Entry Size (sh_entsize)",
+                                    &format!("{:#x}", section.entry_size),
+                                );
+                                row(ui, "Flags Decoded", &section_flags_str(section.flags));
+                                row(
+                                    ui,
+                                    "Linked Section (sh_link)",
+                                    &format!("#{}", section.link),
+                                );
+                            });
+                    },
+                );
+            });
         }
     }
 
     fn render_segments(&mut self, ui: &mut egui::Ui, binary: &Binary) {
         ui.horizontal(|ui| {
-            ui.heading(format!("📦 Segments ({})", binary.segments.len()));
+            ui.heading(
+                egui::RichText::new(format!("📦 Segments ({})", binary.segments.len()))
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("↺ Reset Widths").clicked() {
                     self.segment_col_widths = DEFAULT_SEGMENT_COL_WIDTHS;
@@ -1966,7 +2773,7 @@ impl ViewState {
                         ui,
                         &mut self.segment_col_widths[2],
                         DEFAULT_SEGMENT_COL_WIDTHS[2],
-                        50.0,
+                        60.0,
                         "Flags",
                         sort_arrow(sort_field == SegmentSort::Flags, sort_asc),
                         || {
@@ -1981,7 +2788,7 @@ impl ViewState {
                         ui,
                         &mut self.segment_col_widths[3],
                         DEFAULT_SEGMENT_COL_WIDTHS[3],
-                        65.0,
+                        75.0,
                         "Offset",
                         sort_arrow(sort_field == SegmentSort::Offset, sort_asc),
                         || {
@@ -1996,8 +2803,8 @@ impl ViewState {
                         ui,
                         &mut self.segment_col_widths[4],
                         DEFAULT_SEGMENT_COL_WIDTHS[4],
-                        80.0,
-                        "Virt Address",
+                        85.0,
+                        "VirtAddr",
                         sort_arrow(sort_field == SegmentSort::Address, sort_asc),
                         || {
                             toggle_sort(
@@ -2011,8 +2818,8 @@ impl ViewState {
                         ui,
                         &mut self.segment_col_widths[5],
                         DEFAULT_SEGMENT_COL_WIDTHS[5],
-                        65.0,
-                        "File Size",
+                        70.0,
+                        "FileSize",
                         sort_arrow(sort_field == SegmentSort::Size, sort_asc),
                         || {
                             toggle_sort(
@@ -2026,8 +2833,8 @@ impl ViewState {
                         ui,
                         &mut self.segment_col_widths[6],
                         DEFAULT_SEGMENT_COL_WIDTHS[6],
-                        65.0,
-                        "Mem Size",
+                        70.0,
+                        "MemSize",
                         None,
                         || {},
                     );
@@ -2035,7 +2842,7 @@ impl ViewState {
                         ui,
                         &mut self.segment_col_widths[7],
                         DEFAULT_SEGMENT_COL_WIDTHS[7],
-                        55.0,
+                        60.0,
                         "Align",
                         None,
                         || {},
@@ -2062,10 +2869,14 @@ impl ViewState {
                             segment.segment_type,
                             segment_type_name(segment.segment_type)
                         );
-                        let type_btn = egui::Button::new(egui::RichText::new(&type_str).strong())
-                            .min_size(egui::vec2(self.segment_col_widths[1], 20.0))
-                            .selected(is_selected)
-                            .truncate();
+                        let type_btn = egui::Button::new(
+                            egui::RichText::new(&type_str)
+                                .strong()
+                                .color(ThemeTokens::TEXT_PRIMARY),
+                        )
+                        .min_size(egui::vec2(self.segment_col_widths[1], 20.0))
+                        .selected(is_selected)
+                        .truncate();
                         if ui.add(type_btn).clicked() {
                             if is_selected {
                                 self.selected_segment = None;
@@ -2077,9 +2888,9 @@ impl ViewState {
                         let flags_str = segment_flags_str(segment.flags);
                         let is_rwx = (segment.flags & 2 != 0) && (segment.flags & 1 != 0);
                         let flags_color = if is_rwx {
-                            egui::Color32::from_rgb(230, 70, 70)
+                            ThemeTokens::DANGER
                         } else {
-                            ui.visuals().text_color()
+                            ThemeTokens::TEXT_SECONDARY
                         };
                         cell_label(
                             ui,
@@ -2087,7 +2898,7 @@ impl ViewState {
                             egui::RichText::new(flags_str).color(flags_color).strong(),
                             false,
                             if is_rwx {
-                                Some("⚠️ W^X violation: Write and Execute permissions")
+                                Some("⚠️ W^X violation: Write and Execute permissions!")
                             } else {
                                 None
                             },
@@ -2144,57 +2955,97 @@ impl ViewState {
             }
             if splitter_resp.dragged() {
                 self.segment_detail_height =
-                    (self.segment_detail_height - splitter_resp.drag_delta().y).clamp(80.0, 350.0);
+                    (self.segment_detail_height - splitter_resp.drag_delta().y).clamp(90.0, 360.0);
             }
 
             let fill = if splitter_resp.dragged() {
-                egui::Color32::from_rgb(91, 91, 214)
+                ThemeTokens::BORDER_ACTIVE
             } else {
-                ui.visuals().faint_bg_color
+                ThemeTokens::BORDER_SUBTLE
             };
             ui.painter()
                 .rect_filled(splitter_rect, egui::CornerRadius::same(2), fill);
 
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), self.segment_detail_height),
-                egui::Layout::top_down(egui::Align::LEFT),
-                |ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(format!(
-                            "Segment #{}: {}",
-                            segment.index,
-                            segment_type_name(segment.segment_type)
-                        ));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕ Close").clicked() {
-                                self.selected_segment = None;
-                            }
-                        });
-                    });
-                    ui.add_space(4.0);
+            let detail_frame = egui::Frame::new()
+                .fill(ThemeTokens::BG_SURFACE)
+                .inner_margin(egui::Margin::symmetric(14, 10));
 
-                    egui::Grid::new("seg_detail_grid")
-                        .num_columns(4)
-                        .spacing([24.0, 6.0])
-                        .show(ui, |ui| {
-                            row(
-                                ui,
-                                "Virtual Address",
-                                &format!("{:#010x}", segment.virtual_address),
+            detail_frame.show(ui, |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), self.segment_detail_height),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(
+                                egui::RichText::new(format!(
+                                    "Segment #{}: {}",
+                                    segment.index,
+                                    segment_type_name(segment.segment_type)
+                                ))
+                                .size(14.0)
+                                .color(ThemeTokens::TEXT_PRIMARY),
                             );
-                            row(ui, "File Offset", &format!("{:#x}", segment.offset));
-                            row(ui, "File Size", &format_bytes(segment.file_size));
-                            row(ui, "Memory Size", &format_bytes(segment.memory_size));
-                            row(ui, "Alignment", &format!("{:#x}", segment.alignment));
-                            row(ui, "Flags", &segment_flags_str(segment.flags));
+
+                            if segment.virtual_address != 0
+                                && ui.small_button("📋 Copy Address").clicked()
+                            {
+                                ui.ctx()
+                                    .copy_text(format!("{:#010x}", segment.virtual_address));
+                                self.set_status("Segment address copied");
+                            }
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("✕ Close").clicked() {
+                                        self.selected_segment = None;
+                                    }
+                                },
+                            );
                         });
-                },
-            );
+                        ui.add_space(4.0);
+
+                        egui::Grid::new("seg_detail_grid")
+                            .num_columns(4)
+                            .spacing([28.0, 6.0])
+                            .show(ui, |ui| {
+                                row(
+                                    ui,
+                                    "Virtual Address",
+                                    &format!("{:#010x}", segment.virtual_address),
+                                );
+                                row(ui, "File Offset", &format!("{:#x}", segment.offset));
+                                row(ui, "File Size", &format_bytes(segment.file_size));
+                                row(ui, "Memory Size", &format_bytes(segment.memory_size));
+                                row(ui, "Alignment", &format!("{:#x}", segment.alignment));
+                                row(ui, "Flags", &segment_flags_str(segment.flags));
+                            });
+                    },
+                );
+            });
         }
     }
 
     fn render_dependencies(&mut self, ui: &mut egui::Ui, binary: &Binary) {
-        ui.heading("🔗 Dynamic Loader & Dependencies");
+        ui.horizontal(|ui| {
+            ui.heading(
+                egui::RichText::new("🔗 Dynamic Loader & Dependencies")
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !binary.dynamic.needed.is_empty()
+                    && ui
+                        .button(egui::RichText::new("📋 Copy All Dependencies").size(12.0))
+                        .clicked()
+                {
+                    ui.ctx().copy_text(binary.dynamic.needed.join("\n"));
+                    self.set_status("All dependency names copied");
+                }
+            });
+        });
+
         ui.add_space(8.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -2206,21 +3057,35 @@ impl ViewState {
             )
             .default_open(true)
             .show(ui, |ui| {
-                ui.group(|ui| {
+                let card = egui::Frame::new()
+                    .fill(ThemeTokens::BG_SURFACE)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(18, 14));
+
+                card.show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     egui::Grid::new("loader_grid")
                         .num_columns(2)
-                        .spacing([20.0, 8.0])
+                        .spacing([24.0, 8.0])
                         .show(ui, |ui| {
-                            row(
-                                ui,
-                                "ELF Interpreter (PT_INTERP)",
-                                binary
+                            ui.strong("ELF Interpreter (PT_INTERP)");
+                            ui.horizontal(|ui| {
+                                let interp = binary
                                     .dynamic
                                     .interpreter
                                     .as_deref()
-                                    .unwrap_or("None (Statically Linked)"),
-                            );
+                                    .unwrap_or("None (Statically Linked)");
+                                ui.label(interp);
+                                if binary.dynamic.interpreter.is_some()
+                                    && ui.small_button("📋 Copy").clicked()
+                                {
+                                    ui.ctx().copy_text(interp.to_string());
+                                    self.set_status("Interpreter path copied");
+                                }
+                            });
+                            ui.end_row();
+
                             row(
                                 ui,
                                 "RPATH",
@@ -2235,9 +3100,9 @@ impl ViewState {
                                 ui,
                                 "Binding Mode",
                                 if binary.dynamic.bind_now {
-                                    "Immediate (BIND_NOW)"
+                                    "Immediate Binding (BIND_NOW)"
                                 } else {
-                                    "Lazy Binding"
+                                    "Lazy Binding (DF_BIND_NOW not set)"
                                 },
                             );
                         });
@@ -2257,20 +3122,36 @@ impl ViewState {
             )
             .default_open(true)
             .show(ui, |ui| {
-                if binary.dynamic.needed.is_empty() {
-                    ui.label("No DT_NEEDED dependencies found.");
-                } else {
-                    for lib in &binary.dynamic.needed {
-                        ui.horizontal(|ui| {
-                            ui.label("•");
-                            ui.monospace(egui::RichText::new(lib).strong());
-                            if ui.small_button("📋 Copy").clicked() {
-                                ui.ctx().copy_text(lib.clone());
-                                self.set_status(format!("Copied {lib}"));
-                            }
-                        });
+                let card = egui::Frame::new()
+                    .fill(ThemeTokens::BG_SURFACE)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(18, 14));
+
+                card.show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    if binary.dynamic.needed.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No DT_NEEDED dependencies found (statically linked or self-contained).")
+                                .color(ThemeTokens::TEXT_MUTED),
+                        );
+                    } else {
+                        for lib in &binary.dynamic.needed {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("•").color(ThemeTokens::ACCENT_PRIMARY));
+                                ui.monospace(
+                                    egui::RichText::new(lib)
+                                        .strong()
+                                        .color(ThemeTokens::TEXT_PRIMARY),
+                                );
+                                if ui.small_button("📋 Copy").clicked() {
+                                    ui.ctx().copy_text(lib.clone());
+                                    self.set_status(format!("Copied {lib}"));
+                                }
+                            });
+                        }
                     }
-                }
+                });
             });
 
             ui.add_space(10.0);
@@ -2287,53 +3168,83 @@ impl ViewState {
                 )
                 .default_open(false)
                 .show(ui, |ui| {
-                    egui::Grid::new("dyn_entries_grid")
-                        .num_columns(3)
-                        .spacing([20.0, 6.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.strong("Tag");
-                            ui.strong("Value");
-                            ui.strong("Decoded Info");
-                            ui.end_row();
+                    let card = egui::Frame::new()
+                        .fill(ThemeTokens::BG_SURFACE)
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                        .inner_margin(egui::Margin::symmetric(18, 14));
 
-                            for entry in &binary.dynamic.entries {
-                                ui.monospace(&entry.tag_name);
-                                ui.monospace(format!("{:#x}", entry.value));
-                                ui.label(entry.string_value.as_deref().unwrap_or("-"));
+                    card.show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::Grid::new("dyn_entries_grid")
+                            .num_columns(3)
+                            .spacing([24.0, 6.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.strong("Tag Name");
+                                ui.strong("Value / Offset");
+                                ui.strong("Decoded String / Info");
                                 ui.end_row();
-                            }
-                        });
+
+                                for entry in &binary.dynamic.entries {
+                                    ui.monospace(
+                                        egui::RichText::new(&entry.tag_name)
+                                            .color(ThemeTokens::INFO),
+                                    );
+                                    ui.monospace(format!("{:#x}", entry.value));
+                                    ui.label(entry.string_value.as_deref().unwrap_or("-"));
+                                    ui.end_row();
+                                }
+                            });
+                    });
                 });
             }
         });
     }
 
     fn render_notes(&mut self, ui: &mut egui::Ui, notes: &[ElfNote]) {
-        ui.heading(format!("📝 ELF Notes & Build Attributes ({})", notes.len()));
-        ui.label("Embedded notes specifying build IDs, minimum OS ABI versions, and processor extensions.");
-        ui.add_space(12.0);
+        ui.heading(
+            egui::RichText::new(format!("📝 ELF Notes & Build Attributes ({})", notes.len()))
+                .size(20.0)
+                .strong()
+                .color(ThemeTokens::TEXT_PRIMARY),
+        );
+        ui.label(
+            egui::RichText::new(
+                "Embedded descriptors declaring build identifiers, ABI constraints, and processor capabilities.",
+            )
+            .color(ThemeTokens::TEXT_SECONDARY),
+        );
+        ui.add_space(10.0);
 
         if notes.is_empty() {
-            ui.label("No note segments or sections found in this binary.");
+            ui.label(
+                egui::RichText::new("No note segments or sections found in this binary.")
+                    .color(ThemeTokens::TEXT_MUTED),
+            );
             return;
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (idx, note) in notes.iter().enumerate() {
                 let frame = egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
+                    .fill(ThemeTokens::BG_SURFACE)
                     .corner_radius(egui::CornerRadius::same(8))
-                    .inner_margin(egui::Margin::symmetric(16, 12));
+                    .stroke(egui::Stroke::new(1.0, ThemeTokens::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(18, 14));
 
                 frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.strong(format!("Note #{}: [{}]", idx + 1, note.name));
+                        ui.strong(
+                            egui::RichText::new(format!("Note #{}: [{}]", idx + 1, note.name))
+                                .size(14.5)
+                                .color(ThemeTokens::TEXT_PRIMARY),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             badge(
                                 ui,
                                 &format!("Type {:#x}", note.note_type),
-                                egui::Color32::from_rgb(110, 110, 240),
+                                ThemeTokens::ACCENT_HOVER,
                             );
                         });
                     });
@@ -2341,10 +3252,12 @@ impl ViewState {
                     ui.label(&note.description);
 
                     if let Some(bid) = &note.build_id {
-                        ui.add_space(4.0);
+                        ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.strong("Build ID:");
-                            ui.monospace(bid);
+                            ui.monospace(
+                                egui::RichText::new(bid).color(ThemeTokens::INFO).strong(),
+                            );
                             if ui.small_button("📋 Copy").clicked() {
                                 ui.ctx().copy_text(bid.clone());
                                 self.set_status("Build ID copied");
@@ -2353,8 +3266,8 @@ impl ViewState {
                     }
 
                     if !note.properties.is_empty() {
-                        ui.add_space(4.0);
-                        ui.strong("Features & Properties:");
+                        ui.add_space(6.0);
+                        ui.strong("GNU Processor Properties:");
                         for prop in &note.properties {
                             ui.monospace(format!("  • {prop}"));
                         }
@@ -2367,9 +3280,14 @@ impl ViewState {
 
     fn render_relocations(&mut self, ui: &mut egui::Ui, relocations: &[Relocation]) {
         ui.horizontal(|ui| {
-            ui.heading(format!("🎯 Relocations ({})", relocations.len()));
+            ui.heading(
+                egui::RichText::new(format!("🎯 Relocations ({})", relocations.len()))
+                    .size(20.0)
+                    .strong()
+                    .color(ThemeTokens::TEXT_PRIMARY),
+            );
 
-            ui.add_space(16.0);
+            ui.add_space(14.0);
             ui.label("🔍");
             ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
@@ -2407,7 +3325,10 @@ impl ViewState {
             })
             .collect();
 
-        ui.small(format!("Showing {} relocations", visible.len()));
+        ui.small(
+            egui::RichText::new(format!("Showing {} relocations", visible.len()))
+                .color(ThemeTokens::TEXT_MUTED),
+        );
         ui.add_space(4.0);
 
         // Sticky Table Header
@@ -2483,10 +3404,16 @@ impl ViewState {
                     );
 
                     let sym_name = r.symbol_name.as_deref().unwrap_or("<none>");
+                    let sym_color = if r.symbol_name.is_some() {
+                        ThemeTokens::INFO
+                    } else {
+                        ThemeTokens::TEXT_MUTED
+                    };
+
                     cell_label(
                         ui,
                         self.reloc_col_widths[2],
-                        egui::RichText::new(sym_name).strong(),
+                        egui::RichText::new(sym_name).color(sym_color).strong(),
                         true,
                         Some(sym_name),
                     );
@@ -2504,16 +3431,81 @@ impl ViewState {
     }
 }
 
+fn scorecard_item(
+    ui: &mut egui::Ui,
+    title: &str,
+    status: &str,
+    color: egui::Color32,
+    icon: &str,
+    hint: &str,
+) -> bool {
+    let mut clicked = false;
+    let frame = egui::Frame::new()
+        .fill(ThemeTokens::BG_SURFACE)
+        .corner_radius(egui::CornerRadius::same(6))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.45)))
+        .inner_margin(egui::Margin::symmetric(12, 10));
+
+    let resp = frame
+        .show(ui, |ui| {
+            ui.set_width(135.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icon).size(14.0));
+                ui.strong(
+                    egui::RichText::new(title)
+                        .size(12.0)
+                        .color(ThemeTokens::TEXT_PRIMARY),
+                );
+            });
+            ui.add_space(4.0);
+            badge(ui, status, color);
+        })
+        .response;
+
+    if resp.on_hover_text(hint).clicked() {
+        clicked = true;
+    }
+    clicked
+}
+
 fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
     let frame = egui::Frame::new()
-        .fill(color.gamma_multiply(0.18))
-        .corner_radius(egui::CornerRadius::same(6))
-        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.6)))
-        .inner_margin(egui::Margin::symmetric(8, 3));
+        .fill(color.gamma_multiply(0.14))
+        .corner_radius(egui::CornerRadius::same(4))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.5)))
+        .inner_margin(egui::Margin::symmetric(7, 3));
 
     frame.show(ui, |ui| {
-        ui.label(egui::RichText::new(text).color(color).strong().size(12.0));
+        ui.label(egui::RichText::new(text).color(color).strong().size(11.5));
     });
+}
+
+fn entropy_badge(ui: &mut egui::Ui, entropy: Option<f64>) {
+    let (val_str, desc, col) = match entropy {
+        Some(e) if e >= 7.2 => (format!("{e:.2}"), "Packed / Encrypted", ThemeTokens::DANGER),
+        Some(e) if e >= 6.0 => (format!("{e:.2}"), "Code density", ThemeTokens::WARNING),
+        Some(e) if e >= 2.0 => (format!("{e:.2}"), "Data density", ThemeTokens::INFO),
+        Some(e) => (format!("{e:.2}"), "Sparse / Zeros", ThemeTokens::SUCCESS),
+        None => ("n/a".to_string(), "Unscanned", ThemeTokens::TEXT_MUTED),
+    };
+
+    let frame = egui::Frame::new()
+        .fill(col.gamma_multiply(0.12))
+        .corner_radius(egui::CornerRadius::same(4))
+        .stroke(egui::Stroke::new(1.0, col.gamma_multiply(0.4)))
+        .inner_margin(egui::Margin::symmetric(5, 2));
+
+    let resp = frame.show(ui, |ui| {
+        ui.label(
+            egui::RichText::new(val_str)
+                .color(col)
+                .monospace()
+                .strong()
+                .size(11.5),
+        );
+    });
+    resp.response
+        .on_hover_text(format!("Shannon Entropy: {desc} (0.00-8.00 bits/byte)"));
 }
 
 fn sort_arrow(is_active: bool, is_asc: bool) -> Option<&'static str> {
@@ -2574,16 +3566,16 @@ fn render_col_header(
         }
 
         let stroke_color = if handle_resp.dragged() {
-            egui::Color32::from_rgb(91, 91, 214)
+            ThemeTokens::BORDER_ACTIVE
         } else if handle_resp.hovered() {
-            egui::Color32::from_rgb(140, 140, 230)
+            ThemeTokens::ACCENT_HOVER
         } else {
-            ui.visuals().faint_bg_color
+            ThemeTokens::BORDER_SUBTLE
         };
         ui.painter().vline(
             handle_rect.center().x,
             handle_rect.y_range(),
-            egui::Stroke::new(1.5, stroke_color),
+            egui::Stroke::new(1.0, stroke_color),
         );
     });
 }
@@ -2611,32 +3603,30 @@ fn cell_label(
 fn render_drop_overlay(ui: &mut egui::Ui) {
     ui.centered_and_justified(|ui| {
         let frame = egui::Frame::new()
-            .fill(egui::Color32::from_black_alpha(200))
+            .fill(egui::Color32::from_black_alpha(210))
             .corner_radius(egui::CornerRadius::same(16))
-            .stroke(egui::Stroke::new(
-                3.0,
-                egui::Color32::from_rgb(110, 110, 240),
-            ))
-            .inner_margin(egui::Margin::same(40));
+            .stroke(egui::Stroke::new(2.5, ThemeTokens::ACCENT_PRIMARY))
+            .inner_margin(egui::Margin::same(44));
 
         frame.show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.label(
                     egui::RichText::new("📥")
-                        .size(64.0)
-                        .color(egui::Color32::from_rgb(120, 120, 255)),
+                        .size(56.0)
+                        .color(ThemeTokens::ACCENT_HOVER),
                 );
                 ui.add_space(12.0);
                 ui.heading(
-                    egui::RichText::new("Drop ELF Binary Here to Inspect")
+                    egui::RichText::new("Drop ELF Binary to Inspect")
                         .size(24.0)
                         .strong()
                         .color(egui::Color32::WHITE),
                 );
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("Safe local analysis without execution")
-                        .color(egui::Color32::from_gray(200)),
+                    egui::RichText::new("Safe, local static inspection — binary is never executed")
+                        .size(14.0)
+                        .color(ThemeTokens::TEXT_SECONDARY),
                 );
             });
         });
