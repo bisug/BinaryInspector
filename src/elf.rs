@@ -67,11 +67,15 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     let notes = parse_notes(bytes, &class, &endianness, &sections, &segments)?;
     let relocations = parse_relocations(bytes, &class, &endianness, &sections, &symbols)?;
 
+    // Read before the struct literal below moves `class` and `endianness` out.
+    let elf_type = elf_type(read_u16(bytes, 16, &endianness)?);
+    let machine = machine(read_u16(bytes, 18, &endianness)?);
+
     let elf_header = ElfHeader {
         class,
         endianness,
-        elf_type: elf_type(read_u16(bytes, 16, &layout.endianness)?),
-        machine: machine(read_u16(bytes, 18, &layout.endianness)?),
+        elf_type,
+        machine,
         os_abi: os_abi(ident[7]),
         abi_version: ident[8],
         entry_point: layout.entry_point,
@@ -1143,7 +1147,6 @@ fn parse_relocations(
 
 #[derive(Debug)]
 struct Layout {
-    endianness: Endianness,
     entry_point: u64,
     flags: u32,
     program_offset: u64,
@@ -1219,10 +1222,6 @@ impl Layout {
             .into());
         }
         Ok(Self {
-            endianness: match endianness {
-                Endianness::Little => Endianness::Little,
-                Endianness::Big => Endianness::Big,
-            },
             entry_point: read_word(24)?,
             flags,
             program_offset: read_word(program_offset_at)?,

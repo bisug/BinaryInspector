@@ -64,7 +64,7 @@ To build the native desktop GUI application:
 cargo build --release --bin binary-inspector-gui
 ```
 
-The GUI executable is `target/release/binary-inspector-gui` (`.exe` on Windows). It supports file picker dialogs, drag-and-drop, and presents Overview, Sections, Segments, and Dependencies views. It uses the same safe inspection core as the CLI.
+The GUI executable is `target/release/binary-inspector-gui` (`.exe` on Windows). It supports file picker dialogs, drag-and-drop, and presents Overview, Mitigations, Symbols, Sections, Segments, Dependencies, Notes, and Relocations views. It uses the same safe inspection core as the CLI.
 
 ## Usage
 
@@ -98,7 +98,7 @@ binary-inspector-gui
 - Click **Open binary** to select an ELF binary using the native platform file chooser.
 - Or simply **drag and drop** an ELF binary into the application window.
 - The binary is parsed asynchronously on a background thread while the UI remains fully responsive.
-- Navigate between **Overview**, **Sections**, **Segments**, and **Dependencies** tabs.
+- Navigate between **Overview**, **Mitigations**, **Symbols**, **Sections**, **Segments**, **Dependencies**, **Notes**, and **Relocations** tabs.
 
 Full walkthrough — tabs, sorting, symbol detail pane, and keyboard shortcuts: [GUI Guide](https://github.com/bisug/BinaryInspector/wiki/GUI-Guide).
 

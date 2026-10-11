@@ -784,9 +784,9 @@ impl ViewState {
                                 ui,
                                 "File Size",
                                 &format!(
-                                    "{} ({})",
+                                    "{} ({} bytes)",
                                     format_bytes(binary.file.size_bytes),
-                                    format_number(binary.file.size_bytes) + " bytes"
+                                    format_number(binary.file.size_bytes)
                                 ),
                             );
                             row(ui, "Format", "ELF (Executable and Linkable Format)");
