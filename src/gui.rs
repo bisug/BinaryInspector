@@ -19,6 +19,11 @@ use binary_inspector::{
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    let initial_path = std::env::args_os()
+        .nth(1)
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty());
+
     eframe::run_native(
         "BinaryInspector",
         eframe::NativeOptions {
@@ -29,7 +34,13 @@ fn main() -> eframe::Result {
                 .with_min_inner_size([720.0, 480.0]),
             ..Default::default()
         },
-        Box::new(|_cc| Ok(Box::<InspectorApp>::default())),
+        Box::new(move |_cc| {
+            let mut app = Box::<InspectorApp>::default();
+            if let Some(path) = initial_path {
+                app.inspect(path);
+            }
+            Ok(app)
+        }),
     )
 }
 
@@ -262,7 +273,10 @@ impl eframe::App for InspectorApp {
                 self.view_state.selected_symbol = None;
             } else if !self.view_state.search_query.is_empty() {
                 self.view_state.search_query.clear();
-            } else if matches!(self.inspection, Inspection::Failed { .. }) {
+            } else if matches!(
+                self.inspection,
+                Inspection::Ready { .. } | Inspection::Failed { .. }
+            ) {
                 self.inspection = Inspection::Empty;
             }
         }
@@ -275,6 +289,7 @@ impl eframe::App for InspectorApp {
                 .dropped_files
                 .first()
                 .map(|file| file.path().to_path_buf())
+                .filter(|path| !path.as_os_str().is_empty())
         });
         if let Some(path) = dropped_file {
             self.inspect(path);
@@ -2680,6 +2695,7 @@ fn section_type_name(stype: u32) -> &'static str {
         14 => "INIT_ARRAY",
         15 => "FINI_ARRAY",
         0x6ffffff6 => "GNU_HASH",
+        0x6ffffffd => "VERDEF",
         0x6ffffffe => "VERNEED",
         0x6fffffff => "VERSYM",
         _ => "OTHER",

@@ -135,9 +135,10 @@ fn analyze_mitigations(
         // would be a claim about the file rather than a finding.
         Hardening::Unknown
     } else if symbols.iter().any(|s| {
-        s.name == "__stack_chk_fail"
-            || s.name == "__stack_chk_fail_local"
-            || s.name == "__stack_chk_guard"
+        let base_name = s.name.split('@').next().unwrap_or(&s.name);
+        base_name == "__stack_chk_fail"
+            || base_name == "__stack_chk_fail_local"
+            || base_name == "__stack_chk_guard"
     }) {
         Hardening::Enabled
     } else {
@@ -186,11 +187,10 @@ fn analyze_mitigations(
     let mut fortified_functions: Vec<String> = symbols
         .iter()
         .filter(|sym| {
-            if !sym.is_import {
-                return false;
-            }
             let base_name = sym.name.split('@').next().unwrap_or("");
-            base_name.ends_with("_chk")
+            base_name.starts_with("__")
+                && base_name.ends_with("_chk")
+                && (sym.is_import || sym.binding != SymbolBinding::Local)
         })
         .map(|sym| {
             let base_name = sym.name.split('@').next().unwrap_or(&sym.name);
@@ -217,7 +217,13 @@ fn analyze_mitigations(
     let is_insecure_path = |path: &str| {
         path.split(':').any(|part| {
             let p = part.trim();
-            p.is_empty() || p == "." || p.starts_with("./")
+            p.is_empty()
+                || p == "."
+                || p == ".."
+                || (!p.starts_with('/') && !p.starts_with("$ORIGIN") && !p.starts_with("${ORIGIN}"))
+                || p.starts_with("/tmp")
+                || p.starts_with("/var/tmp")
+                || p.starts_with("/dev/shm")
         })
     };
     let has_insecure_rpath = dynamic.rpath.as_deref().is_some_and(is_insecure_path)
@@ -327,18 +333,15 @@ fn dynamic_entries<'a>(
     segments: &[Segment],
 ) -> Result<Option<RawDynamicTable<'a>>, AppError> {
     if let Some(dynamic) = sections.iter().find(|section| section.section_type == 6) {
-        let strings = sections
-            .get(
-                usize::try_from(dynamic.link)
-                    .map_err(|_| malformed("dynamic string-table index is too large"))?,
-            )
-            .ok_or_else(|| malformed("dynamic string-table index is outside the section table"))?;
-        if strings.section_type != 3 {
-            return Err(malformed(
-                "dynamic string-table link does not reference a string table",
-            ));
-        }
-        let table = file_slice(bytes, strings.offset, strings.size, "dynamic string table")?;
+        let strings = usize::try_from(dynamic.link)
+            .ok()
+            .and_then(|idx| sections.get(idx));
+        let table = match strings {
+            Some(s) if s.section_type == 3 => {
+                file_slice(bytes, s.offset, s.size, "dynamic string table").ok()
+            }
+            _ => None,
+        };
         let entries = read_dynamic_entries(
             bytes,
             class,
@@ -347,7 +350,25 @@ fn dynamic_entries<'a>(
             dynamic.size,
             "dynamic section",
         )?;
-        return Ok(Some((entries, Some(table))));
+        let table = match table {
+            Some(t) => Some(t),
+            None => {
+                let address_of = |tag: u64| {
+                    entries
+                        .iter()
+                        .find(|(entry_tag, _)| *entry_tag == tag)
+                        .map(|(_, value)| *value)
+                };
+                match (address_of(5), address_of(10)) {
+                    (Some(address), Some(size)) if size > 0 => vaddr_to_offset(segments, address)
+                        .and_then(|offset| {
+                            file_slice(bytes, offset, size, "dynamic string table").ok()
+                        }),
+                    _ => None,
+                }
+            }
+        };
+        return Ok(Some((entries, table)));
     }
 
     let Some(segment) = segments.iter().find(|segment| segment.segment_type == 2) else {
@@ -370,8 +391,7 @@ fn dynamic_entries<'a>(
     let table = match (address_of(5), address_of(10)) {
         // DT_STRTAB / DT_STRSZ
         (Some(address), Some(size)) if size > 0 => vaddr_to_offset(segments, address)
-            .map(|offset| file_slice(bytes, offset, size, "dynamic string table"))
-            .transpose()?,
+            .and_then(|offset| file_slice(bytes, offset, size, "dynamic string table").ok()),
         _ => None,
     };
     Ok(Some((entries, table)))
@@ -430,7 +450,11 @@ fn vaddr_to_offset(segments: &[Segment], address: u64) -> Option<u64> {
             address >= segment.virtual_address
                 && address - segment.virtual_address < segment.file_size
         })
-        .map(|segment| segment.offset + (address - segment.virtual_address))
+        .and_then(|segment| {
+            segment
+                .offset
+                .checked_add(address - segment.virtual_address)
+        })
 }
 
 fn dynamic_tag_name(tag: u64) -> &'static str {
@@ -468,10 +492,11 @@ fn dynamic_tag_name(tag: u64) -> &'static str {
         30 => "DT_FLAGS",
         0x6fff_fffb => "DT_FLAGS_1",
         0x6fff_fef5 => "DT_GNU_HASH",
+        0x6fff_fff0 => "DT_VERSYM",
+        0x6fff_fffc => "DT_VERDEF",
+        0x6fff_fffd => "DT_VERDEFNUM",
         0x6fff_fffe => "DT_VERNEED",
         0x6fff_ffff => "DT_VERNEEDNUM",
-        0x6fff_fffd => "DT_VERSYM",
-        0x6fff_ff00 => "DT_VERSYM",
         _ => "DT_OTHER",
     }
 }
@@ -794,12 +819,14 @@ fn gnu_hash_symbol_count(
     let chains = table.get(buckets_end..)?;
 
     let mut last = 0;
+    let mut found_any = false;
     for index in 0..bucket_count {
         // A bucket holds the first symbol number in its chain.
         let mut symbol = read_u32(buckets, index * 4, endianness).ok()? as usize;
         if symbol == 0 {
             continue;
         }
+        found_any = true;
         let mut chain_index = symbol.checked_sub(symbol_offset)?;
         loop {
             let chain = read_u32(chains, chain_index.checked_mul(4)?, endianness).ok()?;
@@ -811,7 +838,7 @@ fn gnu_hash_symbol_count(
         }
         last = last.max(symbol);
     }
-    Some(last + 1)
+    if found_any { Some(last + 1) } else { None }
 }
 
 fn symbol_entry_size(class: &ElfClass) -> usize {
@@ -963,12 +990,20 @@ fn parse_notes(
                             let pr_datasz = read_u32(desc_raw, prop_offset + 4, endianness)
                                 .unwrap_or(0) as usize;
                             prop_offset += 8;
-                            if prop_offset + pr_datasz > desc_raw.len() {
-                                break;
-                            }
-                            let pr_data = &desc_raw[prop_offset..prop_offset + pr_datasz];
-                            let pr_padded = (pr_datasz + 7) & !7;
-                            prop_offset += pr_padded;
+                            let pr_end = match prop_offset.checked_add(pr_datasz) {
+                                Some(end) if end <= desc_raw.len() => end,
+                                _ => break,
+                            };
+                            let pr_data = &desc_raw[prop_offset..pr_end];
+                            let pr_padded = match pr_datasz.checked_add(7) {
+                                Some(v) => v & !7,
+                                None => break,
+                            };
+                            let next_offset = match prop_offset.checked_add(pr_padded) {
+                                Some(next) => next,
+                                None => break,
+                            };
+                            prop_offset = next_offset;
 
                             match pr_type {
                                 0xc000_0002 => {
@@ -1266,11 +1301,22 @@ fn parse_sections(
         let offset = table_offset(layout.section_offset, layout.section_entry_size, index)?;
         raw.push(RawSection::read(bytes, offset, class, endianness)?);
     }
-    let names = &raw[usize::from(layout.section_names_index)];
-    if names.section_type != 3 {
-        return Err(malformed("section-name table is not a string table"));
-    }
-    let string_table = file_slice(bytes, names.offset, names.size, "section-name string table")?;
+    let string_table = {
+        let names = &raw[usize::from(layout.section_names_index)];
+        if names.section_type == 3 {
+            Some(file_slice(
+                bytes,
+                names.offset,
+                names.size,
+                "section-name string table",
+            )?)
+        } else if layout.section_names_index == 0 {
+            // e_shstrndx == SHN_UNDEF (0): standard ELF convention when no section name string table is present.
+            None
+        } else {
+            return Err(malformed("section-name table is not a string table"));
+        }
+    };
     let mut text_bytes = 0;
     let mut scanned_bytes = 0_usize;
     let mut sections = Vec::with_capacity(raw.len());
@@ -1300,12 +1346,14 @@ fn parse_sections(
             }
         };
 
+        let name = match string_table {
+            Some(table) => take_text(string_at(table, section.name_offset)?, &mut text_bytes)?,
+            None => String::new(),
+        };
+
         sections.push(Section {
             index: index as u16,
-            name: take_text(
-                string_at(string_table, section.name_offset)?,
-                &mut text_bytes,
-            )?,
+            name,
             section_type: section.section_type,
             flags: section.flags,
             address: section.address,
@@ -2003,6 +2051,114 @@ mod tests {
         assert_eq!(binary.sections.len(), 2);
         assert_eq!(binary.sections[1].name, "foo");
         assert_eq!(binary.sections[1].entropy, None);
+    }
+
+    #[test]
+    fn parses_binary_with_shstrndx_undef() {
+        let mut bytes = vec![0_u8; 128];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        u16_into(&mut bytes, 16, 2);
+        u16_into(&mut bytes, 18, 62);
+        u32_into(&mut bytes, 20, 1);
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes()); // ehsize
+        bytes[40..48].copy_from_slice(&64_u64.to_le_bytes()); // e_shoff
+        u16_into(&mut bytes, 58, 64); // e_shentsize
+        u16_into(&mut bytes, 60, 1); // e_shnum = 1 (just SHT_NULL)
+        u16_into(&mut bytes, 62, 0); // e_shstrndx = 0 (SHN_UNDEF)
+
+        let binary = parse(&bytes, bytes.len() as u64).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(binary.sections.len(), 1);
+        assert_eq!(binary.sections[0].name, "");
+    }
+
+    #[test]
+    fn handles_malformed_gnu_property_note_without_overflow() {
+        // Construct a note segment with an adversarial property whose size overflows
+        let mut bytes = vec![0_u8; 64];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4..9].copy_from_slice(&[2, 1, 1, 0, 0]);
+        u16_into(&mut bytes, 16, 2);
+        u16_into(&mut bytes, 18, 62);
+        u32_into(&mut bytes, 20, 1);
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64_u64.to_le_bytes()); // e_phoff
+        u16_into(&mut bytes, 54, 56); // e_phentsize
+        u16_into(&mut bytes, 56, 1); // e_phnum = 1
+
+        let note_len = 12 + 4 + 16;
+        bytes.resize(64 + 56, 0);
+        u32_into(&mut bytes, 64, 4); // PT_NOTE
+        u64_into(&mut bytes, 72, 120); // p_offset
+        u64_into(&mut bytes, 96, note_len as u64); // p_filesz
+
+        bytes.resize(120 + note_len, 0);
+        u32_into(&mut bytes, 120, 4); // namesz ("GNU\0")
+        u32_into(&mut bytes, 124, 16); // descsz
+        u32_into(&mut bytes, 128, 5); // NT_GNU_PROPERTY_TYPE_0
+        bytes[132..136].copy_from_slice(b"GNU\0");
+        // Craft a property header with an oversized datasz that would overflow unchecked addition
+        u32_into(&mut bytes, 136, 0xc000_0002); // pr_type
+        u32_into(&mut bytes, 140, 0xffff_fff8); // pr_datasz (huge)
+
+        let binary = parse(&bytes, bytes.len() as u64).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(binary.notes.len(), 1);
+        assert_eq!(binary.notes[0].properties.len(), 0);
+    }
+
+    #[test]
+    fn test_dynamic_tags_and_mitigation_detection() {
+        use super::{analyze_mitigations, dynamic_tag_name};
+        use crate::model::{
+            DynamicInfo, ElfHeader, ElfType, Hardening, OsAbi, PieStatus, Relro, Symbol,
+            SymbolBinding, SymbolTableKind, SymbolType, SymbolVisibility,
+        };
+
+        assert_eq!(dynamic_tag_name(0x6fff_fff0), "DT_VERSYM");
+        assert_eq!(dynamic_tag_name(0x6fff_fffc), "DT_VERDEF");
+        assert_eq!(dynamic_tag_name(0x6fff_fffd), "DT_VERDEFNUM");
+
+        let elf = ElfHeader {
+            class: ElfClass::Elf64,
+            endianness: Endianness::Little,
+            elf_type: ElfType::Executable,
+            machine: Machine::X86_64,
+            os_abi: OsAbi::SystemV,
+            abi_version: 0,
+            entry_point: 0x401000,
+            flags: 0,
+            section_offset: 0,
+            section_entry_size: 64,
+            section_count: 0,
+            program_offset: 0,
+            program_entry_size: 56,
+            program_count: 0,
+        };
+
+        let dynamic = DynamicInfo {
+            rpath: Some("../lib:/usr/lib".to_string()),
+            ..Default::default()
+        };
+
+        let symbols = vec![Symbol {
+            index: 0,
+            name: "__stack_chk_fail@GLIBC_2.4".to_string(),
+            value: 0x1000,
+            size: 16,
+            sym_type: SymbolType::Func,
+            binding: SymbolBinding::Global,
+            visibility: SymbolVisibility::Default,
+            section_index: None,
+            is_import: true,
+            is_export: false,
+            table: SymbolTableKind::Dynamic,
+        }];
+
+        let mit = analyze_mitigations(&elf, &dynamic, &[], &symbols);
+        assert_eq!(mit.stack_canary, Hardening::Enabled);
+        assert!(mit.has_insecure_rpath);
+        assert_eq!(mit.pie, PieStatus::NoPie);
+        assert_eq!(mit.relro, Relro::Unknown);
     }
 
     fn u16_into(bytes: &mut [u8], at: usize, value: u16) {

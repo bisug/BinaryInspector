@@ -151,9 +151,11 @@ else
     if [ -z "$VERSION" ]; then
         if command -v curl >/dev/null 2>&1; then
             VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+        elif command -v wget >/dev/null 2>&1; then
+            VERSION="$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
         fi
         if [ -z "$VERSION" ]; then
-            VERSION="v0.1.0"
+            VERSION="v0.3.0"
         fi
     fi
 
@@ -170,7 +172,11 @@ else
             ARCHIVE="binary-inspector-cli-linux-x86_64.tar.gz"
             echo "Downloading ${ARCHIVE}..."
             download "${RELEASE_BASE}/${ARCHIVE}" "$TMP_DIR/${ARCHIVE}"
-            EXPECTED_HASH="$(grep "${ARCHIVE}" "$CHECKSUMS_FILE" | awk '{print $1}')"
+            EXPECTED_HASH="$(grep -m1 -E "(^|[[:space:]])${ARCHIVE}\$" "$CHECKSUMS_FILE" | awk '{print $1}')"
+            if [ -z "$EXPECTED_HASH" ]; then
+                echo "Error: Checksum for ${ARCHIVE} not found in ${CHECKSUMS_FILE}!" >&2
+                exit 1
+            fi
             verify_sha256 "$TMP_DIR/${ARCHIVE}" "$EXPECTED_HASH"
             tar -xzf "$TMP_DIR/${ARCHIVE}" -C "$TMP_DIR"
             install -m 755 "$TMP_DIR/binary-inspector" "$DEST_DIR/binary-inspector"
@@ -189,7 +195,11 @@ else
         fi
         echo "Downloading ${ARCHIVE}..."
         download "${RELEASE_BASE}/${ARCHIVE}" "$TMP_DIR/${ARCHIVE}"
-        EXPECTED_HASH="$(grep "${ARCHIVE}" "$CHECKSUMS_FILE" | awk '{print $1}')"
+        EXPECTED_HASH="$(grep -m1 -E "(^|[[:space:]])${ARCHIVE}\$" "$CHECKSUMS_FILE" | awk '{print $1}')"
+        if [ -z "$EXPECTED_HASH" ]; then
+            echo "Error: Checksum for ${ARCHIVE} not found in ${CHECKSUMS_FILE}!" >&2
+            exit 1
+        fi
         verify_sha256 "$TMP_DIR/${ARCHIVE}" "$EXPECTED_HASH"
         tar -xzf "$TMP_DIR/${ARCHIVE}" -C "$TMP_DIR"
         install -m 755 "$TMP_DIR/binary-inspector-gui" "$DEST_DIR/binary-inspector-gui"
