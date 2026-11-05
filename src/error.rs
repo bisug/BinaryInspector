@@ -2,18 +2,44 @@
 
 use std::{fmt, io};
 
-/// Detailed reasons why parsing an ELF binary failed.
+/// Binary format a [`ParseError`] was raised for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryFormat {
+    /// ELF (Linux, BSD, Android).
+    Elf,
+    /// Windows PE/COFF.
+    Pe,
+    /// Apple Mach-O.
+    MachO,
+}
+
+impl fmt::Display for BinaryFormat {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Elf => "ELF",
+            Self::Pe => "PE/COFF",
+            Self::MachO => "Mach-O",
+        })
+    }
+}
+
+/// Detailed reasons why parsing a binary failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    /// The file is shorter than the minimum ELF header length.
+    /// The file is shorter than the minimum header length for its format.
     FileTooShort {
+        /// Detected binary format.
+        format: BinaryFormat,
         /// The number of bytes available in the file.
         actual: usize,
         /// The minimum number of bytes required.
         expected: usize,
     },
-    /// The file does not begin with the ELF magic bytes `\x7fELF`.
-    InvalidMagic,
+    /// The file does not begin with the expected magic bytes for its format.
+    InvalidMagic {
+        /// Detected binary format.
+        format: BinaryFormat,
+    },
     /// The ELF specification version is not supported.
     UnsupportedVersion(u8),
     /// The ELF bitness/class is not supported.
@@ -47,57 +73,63 @@ pub enum ParseError {
         /// The maximum allowed value.
         limit: usize,
     },
-    /// General malformed or corrupt ELF data.
+    /// General malformed or corrupt binary data.
     Malformed(String),
 }
 
 impl ParseError {
     /// Returns a categorized title and actionable remediation advice for UI presentation.
-    pub fn guidance(&self) -> (&'static str, &'static str) {
+    pub fn guidance(&self) -> (String, String) {
         match self {
-            Self::FileTooShort { .. } => (
-                "File Too Small",
-                "The file is smaller than the minimum 16-byte ELF identification header.",
+            Self::FileTooShort { format, .. } => (
+                "File Too Small".to_string(),
+                format!(
+                    "The file is smaller than the minimum {format} header length."
+                ),
             ),
-            Self::InvalidMagic => (
-                "Not an ELF Binary",
-                "The file does not start with standard ELF magic (\\x7fELF). Windows (.exe) and macOS (Mach-O) binaries are not supported.",
+            Self::InvalidMagic { format } => (
+                format!("Not a {format} Binary"),
+                match format {
+                    BinaryFormat::Elf => "The file does not start with the ELF magic (\\x7fELF). Supported formats are ELF, PE/COFF (.exe, .dll, .sys), and Mach-O.".to_string(),
+                    BinaryFormat::Pe => "The file does not start with the MZ or PE signature. Supported formats are ELF, PE/COFF (.exe, .dll, .sys), and Mach-O.".to_string(),
+                    BinaryFormat::MachO => "The file does not start with a Mach-O magic number. Supported formats are ELF, PE/COFF (.exe, .dll, .sys), and Mach-O.".to_string(),
+                },
             ),
             Self::UnsupportedVersion(_) => (
-                "Unsupported ELF Version",
-                "Only standard ELF version 1 (EV_CURRENT) is supported.",
+                "Unsupported ELF Version".to_string(),
+                "Only standard ELF version 1 (EV_CURRENT) is supported.".to_string(),
             ),
             Self::UnsupportedClass(_) => (
-                "Unsupported ELF Class",
-                "Only ELF32 (32-bit) and ELF64 (64-bit) binary formats are supported.",
+                "Unsupported ELF Class".to_string(),
+                "Only ELF32 (32-bit) and ELF64 (64-bit) binary formats are supported.".to_string(),
             ),
             Self::UnsupportedEndianness(_) => (
-                "Unsupported Endianness",
-                "Only Little-Endian (ELFDATA2LSB) and Big-Endian (ELFDATA2MSB) formats are supported.",
+                "Unsupported Endianness".to_string(),
+                "Only Little-Endian (ELFDATA2LSB) and Big-Endian (ELFDATA2MSB) formats are supported.".to_string(),
             ),
             Self::OutOfBounds { .. } => (
-                "Corrupted or Truncated Binary",
-                "A header, section, or segment offset extends past the end of the file.",
+                "Corrupted or Truncated Binary".to_string(),
+                "A header, section, or segment offset extends past the end of the file.".to_string(),
             ),
             Self::IntegerOverflow(_) => (
-                "Header Arithmetic Overflow",
-                "An offset or table size computation overflowed, indicating a malformed or adversarial header.",
+                "Header Arithmetic Overflow".to_string(),
+                "An offset or table size computation overflowed, indicating a malformed or adversarial header.".to_string(),
             ),
             Self::InvalidHeader { .. } => (
-                "Malformed Header",
-                "A header field or table entry violates ELF structural constraints.",
+                "Malformed Header".to_string(),
+                "A header field or table entry violates the binary format structural constraints.".to_string(),
             ),
             Self::InvalidStringTable(_) => (
-                "Corrupted String Table",
-                "A required string was not null-terminated or exceeded the inspection limit.",
+                "Corrupted String Table".to_string(),
+                "A required string was not null-terminated or exceeded the inspection limit.".to_string(),
             ),
             Self::LimitExceeded { .. } => (
-                "Safety Limit Exceeded",
-                "An internal table or string exceeded the safety limit designed to prevent denial-of-service.",
+                "Safety Limit Exceeded".to_string(),
+                "An internal table or string exceeded the safety limit designed to prevent denial-of-service.".to_string(),
             ),
             Self::Malformed(_) => (
-                "Malformed ELF Structure",
-                "The binary file failed ELF specification validation.",
+                "Malformed Binary Structure".to_string(),
+                "The binary file failed format specification validation.".to_string(),
             ),
         }
     }
@@ -106,11 +138,18 @@ impl ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FileTooShort { actual, expected } => write!(
+            Self::FileTooShort {
+                format,
+                actual,
+                expected,
+            } => write!(
                 formatter,
-                "file is shorter than the ELF identifier ({actual} bytes, expected at least {expected})"
+                "file is shorter than the {format} header ({actual} bytes, expected at least {expected})"
             ),
-            Self::InvalidMagic => write!(formatter, "not an ELF file (missing \\x7fELF magic)"),
+            Self::InvalidMagic { format } => write!(
+                formatter,
+                "not a {format} file (missing expected magic bytes)"
+            ),
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported ELF identifier version {version}")
             }
@@ -158,7 +197,7 @@ pub enum AppError {
         /// Maximum allowed file size in bytes.
         limit: u64,
     },
-    /// The input is not a supported or valid ELF binary.
+    /// The input is not a supported or valid executable binary.
     Parse(ParseError),
 }
 
@@ -172,19 +211,19 @@ impl AppError {
     }
 
     /// Returns a categorized title and actionable remediation advice for UI presentation.
-    pub fn guidance(&self) -> (&'static str, &'static str) {
+    pub fn guidance(&self) -> (String, String) {
         match self {
             Self::Io(_) => (
-                "Filesystem I/O Error",
-                "Could not read the file from disk. Check file existence and read permissions.",
+                "Filesystem I/O Error".to_string(),
+                "Could not read the file from disk. Check file existence and read permissions.".to_string(),
             ),
             Self::InvalidFileType(_) => (
-                "Unsupported File Type",
-                "BinaryInspector requires regular files. Symlinks, directories, FIFOs, and special devices are not supported.",
+                "Unsupported File Type".to_string(),
+                "BinaryInspector requires regular files. Symlinks, directories, FIFOs, and special devices are not supported.".to_string(),
             ),
             Self::FileTooLarge { .. } => (
-                "File Size Limit Exceeded",
-                "The file exceeds the maximum inspection limit (512 MiB).",
+                "File Size Limit Exceeded".to_string(),
+                "The file exceeds the maximum inspection limit (512 MiB).".to_string(),
             ),
             Self::Parse(parse_err) => parse_err.guidance(),
         }
@@ -233,16 +272,38 @@ mod tests {
 
     #[test]
     fn test_parse_error_guidance_and_display() {
-        let err = ParseError::InvalidMagic;
-        assert_eq!(err.guidance().0, "Not an ELF Binary");
-        assert!(err.to_string().contains("missing \\x7fELF magic"));
+        let err = ParseError::InvalidMagic {
+            format: BinaryFormat::Elf,
+        };
+        assert_eq!(err.guidance().0, "Not a ELF Binary");
+        assert!(err.to_string().contains("not a ELF file"));
+
+        let err = ParseError::InvalidMagic {
+            format: BinaryFormat::Pe,
+        };
+        assert_eq!(err.guidance().0, "Not a PE/COFF Binary");
+        assert!(err.guidance().1.contains("MZ or PE signature"));
+
+        let err = ParseError::InvalidMagic {
+            format: BinaryFormat::MachO,
+        };
+        assert_eq!(err.guidance().0, "Not a Mach-O Binary");
 
         let err = ParseError::FileTooShort {
+            format: BinaryFormat::Elf,
             actual: 8,
             expected: 16,
         };
         assert_eq!(err.guidance().0, "File Too Small");
+        assert!(err.guidance().1.contains("ELF header"));
         assert!(err.to_string().contains("8 bytes, expected at least 16"));
+
+        let err = ParseError::FileTooShort {
+            format: BinaryFormat::Pe,
+            actual: 4,
+            expected: 64,
+        };
+        assert!(err.guidance().1.contains("PE/COFF header"));
 
         let err = ParseError::UnsupportedClass(99);
         assert_eq!(err.guidance().0, "Unsupported ELF Class");
@@ -281,7 +342,7 @@ mod tests {
         assert_eq!(err.guidance().0, "Safety Limit Exceeded");
 
         let err = ParseError::Malformed("invalid segment alignment".to_string());
-        assert_eq!(err.guidance().0, "Malformed ELF Structure");
+        assert_eq!(err.guidance().0, "Malformed Binary Structure");
         assert_eq!(err.to_string(), "invalid segment alignment");
     }
 
@@ -307,9 +368,12 @@ mod tests {
         assert!(file_large_err.source().is_none());
         assert_eq!(file_large_err.guidance().0, "File Size Limit Exceeded");
 
-        let parse_err: AppError = ParseError::InvalidMagic.into();
+        let parse_err: AppError = ParseError::InvalidMagic {
+            format: BinaryFormat::Elf,
+        }
+        .into();
         assert_eq!(parse_err.exit_code(), 3);
         assert!(parse_err.source().is_some());
-        assert_eq!(parse_err.guidance().0, "Not an ELF Binary");
+        assert_eq!(parse_err.guidance().0, "Not a ELF Binary");
     }
 }

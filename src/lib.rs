@@ -42,6 +42,8 @@ pub fn inspect_bytes(bytes: &[u8], file_size: u64) -> Result<Binary, AppError> {
     {
         macho::parse(bytes, file_size)
     } else {
-        Err(AppError::Parse(error::ParseError::InvalidMagic))
+        Err(AppError::Parse(error::ParseError::InvalidMagic {
+            format: error::BinaryFormat::Elf,
+        }))
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    error::{AppError, ParseError},
+    error::{AppError, BinaryFormat, ParseError},
     hash,
     model::{
         Binary, DynamicInfo, ElfNote, FileFormat, FileHashes, FileMetadata, Hardening,
@@ -27,6 +27,7 @@ const DOS_HEADER_LEN: usize = 64;
 pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     if bytes.len() < DOS_HEADER_LEN {
         return Err(ParseError::FileTooShort {
+            format: BinaryFormat::Pe,
             actual: bytes.len(),
             expected: DOS_HEADER_LEN,
         }
@@ -34,7 +35,10 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     }
 
     if &bytes[0..2] != b"MZ" {
-        return Err(ParseError::InvalidMagic.into());
+        return Err(ParseError::InvalidMagic {
+            format: BinaryFormat::Pe,
+        }
+        .into());
     }
 
     // Offset to PE Header is at 0x3C in DOS header

@@ -1,7 +1,7 @@
 //! Bounded decoding of ELF headers, sections, program segments, symbols, notes, relocations, and security mitigations.
 
 use crate::{
-    error::{AppError, ParseError},
+    error::{AppError, BinaryFormat, ParseError},
     hash::{calculate_entropy, sha256_hex},
     model::{
         Binary, DynamicEntry, DynamicInfo, ElfClass, ElfHeader, ElfNote, ElfType, Endianness,
@@ -40,11 +40,15 @@ pub fn parse(bytes: &[u8], size_bytes: u64) -> Result<Binary, AppError> {
     let ident = bytes
         .get(..ELF_IDENT_SIZE)
         .ok_or(ParseError::FileTooShort {
+            format: BinaryFormat::Elf,
             actual: bytes.len(),
             expected: ELF_IDENT_SIZE,
         })?;
     if ident.get(..4) != Some(b"\x7fELF") {
-        return Err(ParseError::InvalidMagic.into());
+        return Err(ParseError::InvalidMagic {
+            format: BinaryFormat::Elf,
+        }
+        .into());
     }
     if ident[6] != 1 {
         return Err(ParseError::UnsupportedVersion(ident[6]).into());
@@ -1222,6 +1226,7 @@ impl Layout {
         };
         if bytes.len() < header_size {
             return Err(ParseError::FileTooShort {
+                format: BinaryFormat::Elf,
                 actual: bytes.len(),
                 expected: header_size,
             }

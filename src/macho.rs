@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    error::{AppError, ParseError},
+    error::{AppError, BinaryFormat, ParseError},
     hash,
     model::{
         Binary, DynamicInfo, ElfNote, FileFormat, FileHashes, FileMetadata, Hardening, MachOHeader,
@@ -105,6 +105,7 @@ const LC_BUILD_VERSION: u32 = 0x32;
 pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     if bytes.len() < 4 {
         return Err(ParseError::FileTooShort {
+            format: BinaryFormat::MachO,
             actual: bytes.len(),
             expected: 4,
         }
@@ -131,6 +132,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
 
     if slice_bytes.len() < 28 {
         return Err(ParseError::FileTooShort {
+            format: BinaryFormat::MachO,
             actual: slice_bytes.len(),
             expected: 28,
         }
@@ -149,12 +151,18 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
         MH_CIGAM => (false, true),
         MH_MAGIC_64 => (true, false),
         MH_CIGAM_64 => (true, true),
-        _ => return Err(ParseError::InvalidMagic.into()),
+        _ => {
+            return Err(ParseError::InvalidMagic {
+                format: BinaryFormat::MachO,
+            }
+            .into());
+        }
     };
 
     let header_size = if is_64_bit { 32 } else { 28 };
     if slice_bytes.len() < header_size {
         return Err(ParseError::FileTooShort {
+            format: BinaryFormat::MachO,
             actual: slice_bytes.len(),
             expected: header_size,
         }
@@ -771,6 +779,7 @@ fn extract_fat_slice<'a>(
 ) -> Result<FatSlice<'a>, AppError> {
     if bytes.len() < 8 {
         return Err(ParseError::FileTooShort {
+            format: BinaryFormat::MachO,
             actual: bytes.len(),
             expected: 8,
         }
