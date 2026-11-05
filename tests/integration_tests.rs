@@ -209,13 +209,13 @@ fn test_rejects_invalid_magic_and_empty_file() {
     let empty: [u8; 0] = [];
     assert!(matches!(
         inspect_bytes(&empty, 0),
-        Err(AppError::Parse(ParseError::InvalidMagic))
+        Err(AppError::Parse(ParseError::InvalidMagic { .. }))
     ));
 
     let text = b"#!/usr/bin/env python3\nprint('hello')\n";
     assert!(matches!(
         inspect_bytes(text, text.len() as u64),
-        Err(AppError::Parse(ParseError::InvalidMagic))
+        Err(AppError::Parse(ParseError::InvalidMagic { .. }))
     ));
 }
 
@@ -259,7 +259,7 @@ fn test_file_inspect_negative_cases() {
     let _ = fs::remove_file(&tmp);
     assert!(matches!(
         res,
-        Err(AppError::Parse(ParseError::InvalidMagic))
+        Err(AppError::Parse(ParseError::InvalidMagic { .. }))
     ));
 }
 

@@ -109,8 +109,8 @@ verify_sha256() {
     elif command -v shasum >/dev/null 2>&1; then
         actual_hash="$(shasum -a 256 "$file" | awk '{print $1}')"
     else
-        echo "Warning: sha256sum/shasum not found; skipping cryptographic verification." >&2
-        return 0
+        echo "Error: sha256sum/shasum not found; refusing to install without checksum verification." >&2
+        return 1
     fi
 
     if [ "$actual_hash" != "$expected_hash" ]; then
@@ -155,7 +155,8 @@ else
             VERSION="$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
         fi
         if [ -z "$VERSION" ]; then
-            VERSION="v0.3.1"
+            echo "Error: could not determine latest release version; pass --version <TAG> explicitly." >&2
+            exit 1
         fi
     fi
 

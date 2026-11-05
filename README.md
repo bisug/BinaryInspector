@@ -61,7 +61,7 @@ Or from a local clone:
 
 ### Pre-built binaries
 
-Download the latest pre-built binaries for Linux, macOS, and Windows from [GitHub Releases](https://github.com/bisug/BinaryInspector/releases).
+Download the latest releases from [GitHub Releases](https://github.com/bisug/BinaryInspector/releases): GUI binaries for Linux, macOS, and Windows, and a CLI binary for Linux x86_64. For a CLI on macOS or Windows, build from source.
 
 ### Build from source
 

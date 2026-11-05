@@ -47,6 +47,114 @@ pub fn report_json(binary: &Binary) -> Result<String, serde_json::Error> {
     })
 }
 
+/// Serializes the inspection result as JSON, including only selected categories.
+pub fn report_json_filtered(
+    binary: &Binary,
+    options: &ReportOptions,
+) -> Result<String, serde_json::Error> {
+    if options.sections
+        && options.segments
+        && options.dependencies
+        && options.symbols
+        && options.mitigations
+        && options.notes
+        && options.relocations
+        && options.strings
+    {
+        return report_json(binary);
+    }
+    let filtered_strings: Vec<_> = if options.strings {
+        binary
+            .strings
+            .iter()
+            .filter(|s| {
+                if options.string_min_len > 0 && s.length < options.string_min_len {
+                    return false;
+                }
+                if let Some(cat) = &options.string_category
+                    && !category_matches(s, cat)
+                {
+                    return false;
+                }
+                true
+            })
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let filtered = FilteredBinary {
+        binary,
+        options,
+        filtered_strings: &filtered_strings,
+    };
+    serde_json::to_string_pretty(&JsonFilteredReport {
+        schema_version: 1,
+        binary: filtered,
+    })
+}
+
+#[derive(Debug)]
+struct FilteredBinary<'a> {
+    binary: &'a Binary,
+    options: &'a ReportOptions,
+    filtered_strings: &'a [crate::model::ExtractedString],
+}
+
+impl serde::Serialize for FilteredBinary<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("format", &self.binary.format)?;
+        map.serialize_entry("file", &self.binary.file)?;
+        if let Some(v) = &self.binary.elf {
+            map.serialize_entry("elf", v)?;
+        }
+        if let Some(v) = &self.binary.pe {
+            map.serialize_entry("pe", v)?;
+        }
+        if let Some(v) = &self.binary.macho {
+            map.serialize_entry("macho", v)?;
+        }
+        if self.options.sections {
+            map.serialize_entry("sections", &self.binary.sections)?;
+        }
+        if self.options.segments {
+            map.serialize_entry("segments", &self.binary.segments)?;
+        }
+        if self.options.dependencies {
+            map.serialize_entry("dynamic", &self.binary.dynamic)?;
+        }
+        if self.options.symbols {
+            map.serialize_entry("symbols", &self.binary.symbols)?;
+        }
+        if self.options.mitigations {
+            map.serialize_entry("mitigations", &self.binary.mitigations)?;
+        }
+        if self.options.notes {
+            map.serialize_entry("notes", &self.binary.notes)?;
+        }
+        if self.options.relocations {
+            map.serialize_entry("relocations", &self.binary.relocations)?;
+        }
+        if self.options.strings {
+            map.serialize_entry("strings", &self.filtered_strings)?;
+        }
+        map.serialize_entry("hashes", &self.binary.hashes)?;
+        map.end()
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct JsonFilteredReport<'a> {
+    schema_version: u32,
+    #[serde(flatten)]
+    binary: FilteredBinary<'a>,
+}
+
 /// Formats the legacy human-readable report for backwards compatibility.
 pub fn human(binary: &Binary, sections: bool, segments: bool, dependencies: bool) -> String {
     report_human(

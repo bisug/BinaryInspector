@@ -57,7 +57,7 @@ fn main() -> ExitCode {
                 string_category: cli.string_category,
             };
             if cli.json {
-                match report::report_json(&binary) {
+                match report::report_json_filtered(&binary, &options) {
                     Ok(json) => match writeln!(io::stdout(), "{json}") {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
