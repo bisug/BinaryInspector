@@ -16,6 +16,12 @@ use crate::{
 
 /// Maximum sections allowed in a single PE binary to guard against resource exhaustion.
 const MAX_SECTIONS: usize = 512;
+/// Ceiling on the section bytes scanned for entropy during one inspection.
+///
+/// Section sizes are attacker-controlled and independent of the file size, so
+/// without a shared budget a small file can declare hundreds of sections that
+/// all claim the whole file and turn bounded input into unbounded work.
+const MAX_TOTAL_SECTION_SCAN_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum imports allowed to guard against denial of service.
 const MAX_IMPORTS: usize = 10_000;
 /// Maximum exports allowed to guard against denial of service.
@@ -132,6 +138,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     let mut segments = Vec::with_capacity(number_of_sections);
     let mut raw_sections = Vec::with_capacity(number_of_sections);
     let mut rwx_sections_count = 0;
+    let mut scanned_bytes = 0_usize;
 
     for i in 0..number_of_sections {
         let Some(sec_offset) = i
@@ -180,12 +187,27 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
             rwx_sections_count += 1;
         }
 
-        // Calculate entropy on raw data if present
+        // Calculate entropy on raw data if present, subject to the shared
+        // scan budget so that many sections claiming the whole file cannot
+        // turn bounded input into unbounded work.
         let entropy = if size_of_raw_data > 0 && pointer_to_raw_data < file_len {
-            let start = pointer_to_raw_data as usize;
-            let end = (pointer_to_raw_data.saturating_add(size_of_raw_data)).min(file_len) as usize;
+            let start: usize = usize::try_from(pointer_to_raw_data).unwrap_or_default();
+            let end: usize = usize::try_from(
+                pointer_to_raw_data
+                    .saturating_add(size_of_raw_data)
+                    .min(file_len),
+            )
+            .unwrap_or_default();
             if start < end && end <= bytes.len() {
-                Some(hash::calculate_entropy(&bytes[start..end]))
+                if scanned_bytes
+                    .checked_add(end - start)
+                    .is_some_and(|total| total <= MAX_TOTAL_SECTION_SCAN_BYTES)
+                {
+                    scanned_bytes += end - start;
+                    Some(hash::calculate_entropy(&bytes[start..end]))
+                } else {
+                    None
+                }
             } else {
                 None
             }

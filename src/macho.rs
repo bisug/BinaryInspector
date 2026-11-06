@@ -24,6 +24,12 @@ const MAX_SECTIONS: usize = 512;
 const MAX_SYMBOLS: usize = 50_000;
 /// Maximum relocations allowed.
 const MAX_RELOCATIONS: usize = 50_000;
+/// Ceiling on the section bytes scanned for entropy during one inspection.
+///
+/// Section sizes are attacker-controlled and independent of the file size, so
+/// without a shared budget a small file can declare thousands of sections that
+/// all claim the whole file and turn bounded input into unbounded work.
+const MAX_TOTAL_SECTION_SCAN_BYTES: usize = 64 * 1024 * 1024;
 
 // Magic numbers
 const MH_MAGIC: u32 = 0xfeed_face;
@@ -196,6 +202,7 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
     let mut rwx_segments = 0usize;
     let mut has_insecure_rpath = false;
     let mut text_vmaddr: Option<u64> = None;
+    let mut scanned_bytes = 0_usize;
 
     // Load Commands traversal
     let mut cmd_offset = header_size;
@@ -294,7 +301,8 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
                         let s_flags = read_u32(cmd_payload, sect_offset + 64, is_little_endian)?;
 
                         let full_sect_name = format!("{s_seg_name},{sect_name}");
-                        let sect_entropy = section_entropy(slice_bytes, s_off, s_size);
+                        let sect_entropy =
+                            section_entropy(slice_bytes, s_off, s_size, &mut scanned_bytes);
 
                         let s_idx = sections.len() as u16;
                         sections.push(Section {
@@ -384,7 +392,8 @@ pub fn parse(bytes: &[u8], file_len: u64) -> Result<Binary, AppError> {
                         let s_flags = read_u32(cmd_payload, sect_offset + 56, is_little_endian)?;
 
                         let full_sect_name = format!("{s_seg_name},{sect_name}");
-                        let sect_entropy = section_entropy(slice_bytes, s_off, s_size);
+                        let sect_entropy =
+                            section_entropy(slice_bytes, s_off, s_size, &mut scanned_bytes);
 
                         let s_idx = sections.len() as u16;
                         sections.push(Section {
@@ -1187,14 +1196,25 @@ fn section_alignment(power: u32) -> Result<u64, ParseError> {
         })
 }
 
-fn section_entropy(bytes: &[u8], offset: u64, size: u64) -> Option<f64> {
+fn section_entropy(bytes: &[u8], offset: u64, size: u64, scanned_bytes: &mut usize) -> Option<f64> {
     if size == 0 {
         return None;
     }
     let end = offset.checked_add(size)?;
     let start = usize::try_from(offset).ok()?;
     let end = usize::try_from(end).ok()?;
-    bytes.get(start..end).map(hash::calculate_entropy)
+    let slice = bytes.get(start..end)?;
+    // Sections beyond the shared scan budget report `entropy: None` rather
+    // than stalling the inspection on duplicated work, mirroring the ELF
+    // parser's behavior.
+    if !scanned_bytes
+        .checked_add(slice.len())
+        .is_some_and(|total| total <= MAX_TOTAL_SECTION_SCAN_BYTES)
+    {
+        return None;
+    }
+    *scanned_bytes += slice.len();
+    Some(hash::calculate_entropy(slice))
 }
 
 #[cfg(test)]
