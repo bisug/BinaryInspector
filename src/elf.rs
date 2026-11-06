@@ -982,17 +982,8 @@ fn parse_notes(
                     }
                     3 => {
                         // NT_GNU_BUILD_ID: SHA-1 or MD5 hash bytes
-                        const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-                        let id_bytes = if desc_raw.len() > 64 {
-                            &desc_raw[..64]
-                        } else {
-                            desc_raw
-                        };
-                        let mut hex = String::with_capacity(id_bytes.len() * 2);
-                        for &b in id_bytes {
-                            hex.push(HEX_LOWER[(b >> 4) as usize] as char);
-                            hex.push(HEX_LOWER[(b & 0x0f) as usize] as char);
-                        }
+                        let id_bytes = desc_raw.get(..64).unwrap_or(desc_raw);
+                        let hex = crate::text::hex_bytes(id_bytes);
                         description = format!("Build ID: {hex}");
                         build_id = Some(hex);
                     }

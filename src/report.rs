@@ -155,25 +155,6 @@ struct JsonFilteredReport<'a> {
     binary: FilteredBinary<'a>,
 }
 
-/// Formats the legacy human-readable report for backwards compatibility.
-pub fn human(binary: &Binary, sections: bool, segments: bool, dependencies: bool) -> String {
-    report_human(
-        binary,
-        ReportOptions {
-            sections,
-            segments,
-            dependencies,
-            symbols: false,
-            mitigations: false,
-            notes: false,
-            relocations: false,
-            strings: false,
-            string_min_len: 0,
-            string_category: None,
-        },
-    )
-}
-
 /// Formats a comprehensive human-readable report.
 pub fn report_human(binary: &Binary, options: ReportOptions) -> String {
     let mut output = String::new();

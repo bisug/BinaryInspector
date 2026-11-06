@@ -1,5 +1,16 @@
 //! Terminal-safe rendering of strings supplied by inspected binaries.
 
+/// Renders bytes as a lowercase hexadecimal string.
+pub fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX_LOWER[(byte >> 4) as usize] as char);
+        output.push(HEX_LOWER[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
 /// Escapes every non-printable or non-ASCII byte using a stable `\xNN` form.
 pub fn escape_bytes(bytes: &[u8]) -> String {
     const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
